@@ -28,8 +28,8 @@ import org.voltdb.client.Client;
 public class FinalCheck {
     static VoltLogger log = new VoltLogger("Benchmark.finalCheck");
     static boolean check(Client client) {
-        long mirrorRows = MatchChecks.getMirrorTableRowCount(client);
-        long importRows = MatchChecks.getImportTableRowCount(client);
+        long mirrorRows = MatchChecks.getMirrorTableRowCount(client, "CountMirror2");
+        long importRows = MatchChecks.getImportTableRowCount(client, "CountImport2");
 
         log.info("Total rows exported: " + KafkaImportBenchmark.finalInsertCount);
         log.info("Rows remaining in the Mirror Table: " + mirrorRows);

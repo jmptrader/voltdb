@@ -24,8 +24,6 @@
 package kafkaimporter.client.kafkaimporter;
 
 import java.io.IOException;
-import java.util.Timer;
-import java.util.TimerTask;
 
 import org.voltcore.logging.VoltLogger;
 import org.voltdb.VoltTable;
@@ -59,34 +57,13 @@ public class MatchChecks {
          }
     }
 
-    protected static Timer checkTimer(long interval, Client client) {
-        final Timer timer = new Timer("checkTimer", true);
-        final Client innerClient = client;
-        timer.scheduleAtFixedRate(new TimerTask() {
-            private long mirrorRowCount = 0;
-
-            @Override
-            public void run() {
-                mirrorRowCount = getMirrorTableRowCount(innerClient);
-                //log.info("checkTimer: Delete rows: " + findAndDeleteMatchingRows(innerClient));
-                log.info("checkTimer: Mirror table row count: " + mirrorRowCount);
-                if (mirrorRowCount == 0) { // indicates everything matched and mirror table empty
-                    log.info("checkTimer: mirrorRowCount is 0. Stopping...");
-                    timer.cancel();
-                    timer.purge();
-                }
-            }
-        }, 0, interval);
-        return timer;
-    }
-
-    protected static long getMirrorTableRowCount(Client client) {
+    protected static long getMirrorTableRowCount(Client client, String table) {
         // check row count in mirror table -- the "master" of what should come back
         // eventually via import
         long mirrorRowCount = 0;
 
         try {
-            VoltTable[] countQueryResult = client.callProcedure("CountMirror").getResults();
+            VoltTable[] countQueryResult = client.callProcedure(table).getResults();
             mirrorRowCount = countQueryResult[0].asScalarLong();
         } catch (IOException | ProcCallException e) {
             e.printStackTrace();
@@ -95,36 +72,11 @@ public class MatchChecks {
         return mirrorRowCount;
     }
 
-    protected static long findAndDeleteMatchingRows(Client client) {
-        long rows = 0;
-        VoltTable results = null;
-
-        try {
-            results = client.callProcedure("MatchRows").getResults()[0];
-        } catch (Exception e) {
-             e.printStackTrace();
-             System.exit(-1);
-        }
-
-        log.info("getRowCount(): " + results.getRowCount());
-        while (results.advanceRow()) {
-            long key = results.getLong(0);
-            // log.info("Key: " + key);
-            try {
-                client.callProcedure(new DeleteCallback(DELETE_ROWS, key), DELETE_ROWS, key);
-            } catch (IOException e) {
-                e.printStackTrace();
-            }
-            rows++;
-        }
-        return rows;
-    }
-
-    public static long getImportTableRowCount(Client client) {
+    public static long getImportTableRowCount(Client client, String table) {
         // check row count in import table
         long importRowCount = 0;
         try {
-            VoltTable[] countQueryResult = client.callProcedure("CountImport").getResults();
+            VoltTable[] countQueryResult = client.callProcedure(table).getResults();
             importRowCount = countQueryResult[0].asScalarLong();
         } catch (IOException | ProcCallException e) {
             e.printStackTrace();

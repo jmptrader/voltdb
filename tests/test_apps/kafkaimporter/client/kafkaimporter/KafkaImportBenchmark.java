@@ -86,6 +86,8 @@ public class KafkaImportBenchmark {
 
     private static final int END_WAIT = 10; // wait at the end for import to settle after export completes
 
+	private static final int MAX_ZERO_INTERVALS = 10;
+
 
     static InsertExport exportProc;
     static TableChangeMonitor exportMon;
@@ -224,9 +226,7 @@ public class KafkaImportBenchmark {
             final long benchmarkEndTime = System.currentTimeMillis() + (1000l * config.duration);
             while (benchmarkEndTime > System.currentTimeMillis()) {
                 long value = System.currentTimeMillis();
-                long key = icnt;
-                exportProc.insertExport(key, value);
-                icnt++;
+                exportProc.insertExport2(icnt++, value);
             }
             // check for export completion
             exportMon.waitForStreamedAllocatedMemoryZero();
@@ -292,14 +292,23 @@ public class KafkaImportBenchmark {
         // not all the rows got to Kafka or not all the rows got imported back.
         long count = 0;
         long prev = 0;
+        int zeroSeenCount = 0; // number of intervals with no rows imported, i.e. no rows deleted from mirror table
         do {
-            count = MatchChecks.getMirrorTableRowCount(client);
+            count = MatchChecks.getMirrorTableRowCount2(client);
             log.info("Mirror table count: " + count);
             if (prev != 0) {
                 log.info("Import rate: " + (prev-count)/END_WAIT + " tps");
             }
             Thread.sleep(END_WAIT*1000);
             prev = count;
+            if ((prev-count) == 0) {
+            	zeroSeenCount++;
+            	if (zeroSeenCount > MAX_ZERO_INTERVALS) {
+            		log.info("Test has not progressed for " + MAX_ZERO_INTERVALS*END_WAIT + " seconds.");
+            		log.info("Ending wait for imports to complete.");
+            		break;
+            	}
+            }
         } while (count > 0);
 
         boolean testResult = FinalCheck.check(client);

@@ -21,10 +21,9 @@
  * OTHER DEALINGS IN THE SOFTWARE.
  */
 package kafkaimporter.client.kafkaimporter;
-import org.voltcore.logging.VoltLogger;
-
 import java.io.IOException;
 
+import org.voltcore.logging.VoltLogger;
 import org.voltdb.client.Client;
 import org.voltdb.client.ClientResponse;
 import org.voltdb.client.ProcedureCallback;
@@ -35,6 +34,7 @@ public class InsertExport {
     final Client m_client;
     final static String INSERT_PN = "InsertFinal";
     final static String EXPORT_PN = "InsertExport";
+    final static String EXPORT2_PN = "InsertExport2"; // this one is the all-values table
 
     public InsertExport(Client client) {
         m_client = client;
@@ -44,16 +44,24 @@ public class InsertExport {
         try {
             m_client.callProcedure(new InsertCallback(EXPORT_PN, key, value), EXPORT_PN, key, value);
         } catch (IOException e) {
-            log.info("Exception calling stored procedure InsertExport");
+            log.info("Exception calling stored procedure " + EXPORT_PN);
             e.printStackTrace();
         }
     }
 
+    public void insertExport2(long key, long value) {
+        try {
+            m_client.callProcedure(new InsertCallback(EXPORT2_PN, key, value), EXPORT2_PN, key, value);
+        } catch (IOException e) {
+            log.info("Exception calling stored procedure " + EXPORT2_PN);
+            e.printStackTrace();
+        }
+    }
     public void insertFinal(long key, long value) {
         try {
             m_client.callProcedure(new InsertCallback(INSERT_PN, key, value), INSERT_PN, key, value);
         } catch (IOException e) {
-            log.info("Exception calling stored procedure InsertFinal");
+            log.info("Exception calling stored procedure " + INSERT_PN);
             e.printStackTrace();
         }
     }
