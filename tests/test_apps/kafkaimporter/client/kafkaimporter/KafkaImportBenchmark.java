@@ -84,7 +84,7 @@ public class KafkaImportBenchmark {
     static AtomicLong rowsAdded = new AtomicLong(0);
     static final AtomicLong finalInsertCount = new AtomicLong(0);
 
-    private static final int END_WAIT = 10; // wait at the end for import to settle after export completes
+    private static final int END_WAIT = 30; // wait at the end for import to settle after export completes
 
 	private static final int MAX_ZERO_INTERVALS = 10;
 
@@ -294,7 +294,7 @@ public class KafkaImportBenchmark {
         long prev = 0;
         int zeroSeenCount = 0; // number of intervals with no rows imported, i.e. no rows deleted from mirror table
         do {
-            count = MatchChecks.getMirrorTableRowCount2(client);
+            count = MatchChecks.getMirrorTableRowCount(client, "CountMirror2");
             log.info("Mirror table count: " + count);
             if (prev != 0) {
                 log.info("Import rate: " + (prev-count)/END_WAIT + " tps");
@@ -303,11 +303,14 @@ public class KafkaImportBenchmark {
             prev = count;
             if ((prev-count) == 0) {
             	zeroSeenCount++;
+                log.info("No progress in interval # " + zeroSeenCount);
             	if (zeroSeenCount > MAX_ZERO_INTERVALS) {
             		log.info("Test has not progressed for " + MAX_ZERO_INTERVALS*END_WAIT + " seconds.");
             		log.info("Ending wait for imports to complete.");
             		break;
             	}
+            } else {
+                zeroSeenCount = 0;  // set back since we're concerned about consecutive 0's, not occasional ones
             }
         } while (count > 0);
 
