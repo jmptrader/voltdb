@@ -397,7 +397,7 @@ TEST_F(TableAndIndexTest, DrTest) {
     districtTable->insertTuple(temp_tuple);
 
     //Flush to generate a buffer
-    drStream.endTransaction();
+    drStream.endTransaction(addPartitionId(70));
     drStream.periodicFlush(-1, addPartitionId(99));
     ASSERT_TRUE( topend.receivedDRBuffer );
 
@@ -445,7 +445,7 @@ TEST_F(TableAndIndexTest, DrTest) {
     districtTable->updateTuple( toUpdate, temp_tuple);
 
     //Flush to generate the log buffer
-    drStream.endTransaction();
+    drStream.endTransaction(addPartitionId(72));
     drStream.periodicFlush(-1, addPartitionId(101));
     ASSERT_TRUE( topend.receivedDRBuffer );
 
@@ -481,7 +481,7 @@ TEST_F(TableAndIndexTest, DrTest) {
     districtTable->deleteTuple( toDelete, true);
 
     //Flush to generate the buffer
-    drStream.endTransaction();
+    drStream.endTransaction(addPartitionId(89));
     drStream.periodicFlush(-1, addPartitionId(102));
     EXPECT_TRUE( topend.receivedDRBuffer );
 
@@ -540,7 +540,7 @@ TEST_F(TableAndIndexTest, DrTestNoPK) {
     districtTable->insertTuple(temp_tuple);
 
     //Flush to generate a buffer
-    drStream.endTransaction();
+    drStream.endTransaction(addPartitionId(70));
     drStream.periodicFlush(-1, addPartitionId(99));
     ASSERT_TRUE( topend.receivedDRBuffer );
 
@@ -584,7 +584,7 @@ TEST_F(TableAndIndexTest, DrTestNoPK) {
     districtTable->deleteTuple(toDelete, true);
 
     //Flush to generate the buffer
-    drStream.endTransaction();
+    drStream.endTransaction(addPartitionId(72));
     drStream.periodicFlush(-1, addPartitionId(101));
     EXPECT_TRUE( topend.receivedDRBuffer );
 
@@ -658,7 +658,7 @@ TEST_F(TableAndIndexTest, DrTestNoPKUninlinedColumn) {
     customerTable->insertTuple(temp_tuple);
 
     //Flush to generate a buffer
-    drStream.endTransaction();
+    drStream.endTransaction(addPartitionId(70));
     drStream.periodicFlush(-1, addPartitionId(99));
     ASSERT_TRUE( topend.receivedDRBuffer );
 
@@ -702,7 +702,7 @@ TEST_F(TableAndIndexTest, DrTestNoPKUninlinedColumn) {
     customerTable->deleteTuple(toDelete, true);
 
     //Flush to generate the buffer
-    drStream.endTransaction();
+    drStream.endTransaction(addPartitionId(72));
     drStream.periodicFlush(-1, addPartitionId(101));
     EXPECT_TRUE( topend.receivedDRBuffer );
 
