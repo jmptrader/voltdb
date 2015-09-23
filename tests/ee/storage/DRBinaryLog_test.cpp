@@ -369,6 +369,19 @@ public:
         m_table->addIndex(thirdIndex);
     }
 
+    void createPrimaryKey() {
+        vector<int> columnIndices;
+        columnIndices.push_back(1); // BIGINT
+        TableIndexScheme scheme = TableIndexScheme("primaryKeyIndex", BALANCED_TREE_INDEX,
+                                                    columnIndices,
+                                                    TableIndex::simplyIndexColumns(),
+                                                    true, true, m_schema);
+        TableIndex *pkeyIndex = TableIndexFactory::TableIndexFactory::getInstance(scheme);
+        assert(pkeyIndex);
+        m_table->addIndex(pkeyIndex);
+        m_table->setPrimaryKeyIndex(pkeyIndex);
+    }
+
     void simpleDeleteTest() {
         std::pair<const TableIndex*, uint32_t> indexPair = m_table->getUniqueIndexForDR();
         std::pair<const TableIndex*, uint32_t> indexPairReplica = m_tableReplica->getUniqueIndexForDR();
@@ -900,6 +913,51 @@ TEST_F(DRBinaryLogTest, PartialTxnRollback) {
     ASSERT_FALSE(tuple.isNullTuple());
     tuple = m_tableReplica->lookupTupleByValues(second_tuple);
     ASSERT_FALSE(tuple.isNullTuple());
+}
+
+/*
+ * Conflict detection test case - Unique Constraint Violation
+ * Operations like insert/insert, insert/update and update/update.
+ */
+TEST_F(DRBinaryLogTest, DetectUniqueConstraintViolation) {
+    createPrimaryKey();
+    ASSERT_FALSE(flush(98));
+
+    // single row write transaction
+    beginTxn(99, 99, 98, 70);
+    TableTuple first_tuple = insertTuple(m_table, prepareTempTuple(m_table, 42, 55555,
+            "349508345.34583", "a thing", "a totally different thing altogether", 5433));
+    endTxn(true);
+
+    // insert the same row again
+    beginTxn(100, 100, 99, 71);
+    TableTuple second_tuple = insertTuple(m_table, prepareTempTuple(m_table, 99, 55555/*causes a constraint violation*/,
+            "92384598.2342", "what", "really, why am I writing anything in these?", 3455));
+    endTxn(true);
+
+    flushAndApply(100);
+
+    EXPECT_EQ(2, m_tableReplica->activeTupleCount());
+    TableTuple tuple = m_tableReplica->lookupTupleByValues(first_tuple);
+    ASSERT_FALSE(tuple.isNullTuple());
+    tuple = m_tableReplica->lookupTupleByValues(second_tuple);
+    ASSERT_FALSE(tuple.isNullTuple());
+}
+
+/*
+ * Conflict detection test case - Missing Tuple
+ * Operations like update/update, update/delete, delete/delete
+ */
+TEST_F(DRBinaryLogTest, DetectMissingTuple) {
+
+}
+
+/*
+ * Conflict detection test case - Timestamp Mismatch
+ * Operations like update/update, update/delete
+ */
+TEST_F(DRBinaryLogTest, DetectTimestampMismatch) {
+
 }
 
 int main() {
