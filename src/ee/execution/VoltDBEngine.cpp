@@ -1809,4 +1809,8 @@ void VoltDBEngine::addToTuplesModified(int64_t amount) {
     m_tuplesModifiedStack.top() += amount;
 }
 
+bool VoltDBEngine::getIsActiveActiveDREnabled() const {
+    return getDatabase()->isActiveActiveDRed();
+}
+
 } // namespace voltdb
