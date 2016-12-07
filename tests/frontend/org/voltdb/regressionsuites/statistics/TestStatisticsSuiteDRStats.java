@@ -1,5 +1,5 @@
 /* This file is part of VoltDB.
- * Copyright (C) 2008-2015 VoltDB Inc.
+ * Copyright (C) 2008-2016 VoltDB Inc.
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -26,7 +26,6 @@ package org.voltdb.regressionsuites.statistics;
 import java.io.IOException;
 import java.util.HashMap;
 import java.util.Map;
-import static junit.framework.Assert.assertEquals;
 
 import junit.framework.Test;
 
@@ -51,7 +50,8 @@ public class TestStatisticsSuiteDRStats extends StatisticsTestSuiteBase {
         System.out.println("\n\nTESTING DRNODE STATS\n\n\n");
         Client client  = getFullyConnectedClient();
 
-        ColumnInfo[] expectedSchema2 = new ColumnInfo[7];
+        ColumnInfo[] expectedSchema2 = new ColumnInfo[8];
+        assertEquals("Expected DRNodeStatistics schema length is 8", 8, expectedSchema2.length);
         expectedSchema2[0] = new ColumnInfo("TIMESTAMP", VoltType.BIGINT);
         expectedSchema2[1] = new ColumnInfo("HOST_ID", VoltType.INTEGER);
         expectedSchema2[2] = new ColumnInfo("HOSTNAME", VoltType.STRING);
@@ -59,16 +59,17 @@ public class TestStatisticsSuiteDRStats extends StatisticsTestSuiteBase {
         expectedSchema2[4] = new ColumnInfo("SYNCSNAPSHOTSTATE", VoltType.STRING);
         expectedSchema2[5] = new ColumnInfo("ROWSINSYNCSNAPSHOT", VoltType.BIGINT);
         expectedSchema2[6] = new ColumnInfo("ROWSACKEDFORSYNCSNAPSHOT", VoltType.BIGINT);
+        expectedSchema2[7] = new ColumnInfo("QUEUEDEPTH", VoltType.BIGINT);
         VoltTable expectedTable2 = new VoltTable(expectedSchema2);
 
         VoltTable[] results = null;
         //
         // DRNODE
         //
-        results = client.callProcedure("@Statistics", "DRNODE", 0).getResults();
+        results = client.callProcedure("@Statistics", "DRPRODUCERNODE", 0).getResults();
         // one aggregate tables returned
         assertEquals(1, results.length);
-        System.out.println("Test DRNODE table: " + results[0].toString());
+        System.out.println("Test DRPRODUCERNODE table: " + results[0].toString());
         validateSchema(results[0], expectedTable2);
         // One row per host for DRNODE stats
         results[0].advanceRow();
@@ -79,13 +80,14 @@ public class TestStatisticsSuiteDRStats extends StatisticsTestSuiteBase {
 
     public void testDRPartitionStatistics() throws Exception {
         if (!VoltDB.instance().getConfig().m_isEnterprise) {
-            System.out.println("SKIPPING DRPARTITION STATS TESTS FOR COMMUNITY VERSION");
+            System.out.println("SKIPPING DRPRODUCERPARTITION STATS TESTS FOR COMMUNITY VERSION");
             return;
         }
-        System.out.println("\n\nTESTING DRPARTITION STATS\n\n\n");
+        System.out.println("\n\nTESTING DRPRODUCERPARTITION STATS\n\n\n");
         Client client  = getFullyConnectedClient();
 
         ColumnInfo[] expectedSchema1 = new ColumnInfo[14];
+        assertEquals("Expected DRPartitionStatistics schema length is 14", 14, expectedSchema1.length);
         expectedSchema1[0] = new ColumnInfo("TIMESTAMP", VoltType.BIGINT);
         expectedSchema1[1] = new ColumnInfo("HOST_ID", VoltType.INTEGER);
         expectedSchema1[2] = new ColumnInfo("HOSTNAME", VoltType.STRING);
@@ -106,7 +108,7 @@ public class TestStatisticsSuiteDRStats extends StatisticsTestSuiteBase {
         //
         // DRPARTITION
         //
-        results = client.callProcedure("@Statistics", "DRPARTITION", 0).getResults();
+        results = client.callProcedure("@Statistics", "DRPRODUCERPARTITION", 0).getResults();
         // one aggregate tables returned
         assertEquals(1, results.length);
         System.out.println("Test DR table: " + results[0].toString());
@@ -131,6 +133,7 @@ public class TestStatisticsSuiteDRStats extends StatisticsTestSuiteBase {
         Client client  = getFullyConnectedClient();
 
         ColumnInfo[] expectedSchema1 = new ColumnInfo[14];
+        assertEquals("Expected DRPartitionStatistics schema length is 14", 14, expectedSchema1.length);
         expectedSchema1[0] = new ColumnInfo("TIMESTAMP", VoltType.BIGINT);
         expectedSchema1[1] = new ColumnInfo("HOST_ID", VoltType.INTEGER);
         expectedSchema1[2] = new ColumnInfo("HOSTNAME", VoltType.STRING);
@@ -147,7 +150,8 @@ public class TestStatisticsSuiteDRStats extends StatisticsTestSuiteBase {
         expectedSchema1[13] = new ColumnInfo("MODE", VoltType.STRING);
         VoltTable expectedTable1 = new VoltTable(expectedSchema1);
 
-        ColumnInfo[] expectedSchema2 = new ColumnInfo[7];
+        ColumnInfo[] expectedSchema2 = new ColumnInfo[8];
+        assertEquals("Expected DRNodeStatistics schema length is 8", 8, expectedSchema2.length);
         expectedSchema2[0] = new ColumnInfo("TIMESTAMP", VoltType.BIGINT);
         expectedSchema2[1] = new ColumnInfo("HOST_ID", VoltType.INTEGER);
         expectedSchema2[2] = new ColumnInfo("HOSTNAME", VoltType.STRING);
@@ -155,6 +159,7 @@ public class TestStatisticsSuiteDRStats extends StatisticsTestSuiteBase {
         expectedSchema2[4] = new ColumnInfo("SYNCSNAPSHOTSTATE", VoltType.STRING);
         expectedSchema2[5] = new ColumnInfo("ROWSINSYNCSNAPSHOT", VoltType.BIGINT);
         expectedSchema2[6] = new ColumnInfo("ROWSACKEDFORSYNCSNAPSHOT", VoltType.BIGINT);
+        expectedSchema2[7] = new ColumnInfo("QUEUEDEPTH", VoltType.BIGINT);
         VoltTable expectedTable2 = new VoltTable(expectedSchema2);
 
         VoltTable[] results = null;

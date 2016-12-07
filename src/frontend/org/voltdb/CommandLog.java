@@ -1,5 +1,5 @@
 /* This file is part of VoltDB.
- * Copyright (C) 2008-2015 VoltDB Inc.
+ * Copyright (C) 2008-2016 VoltDB Inc.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as
@@ -24,14 +24,17 @@ import org.voltdb.iv2.TransactionTask;
 import org.voltdb.messaging.Iv2InitiateTaskMessage;
 
 import com.google_voltpatches.common.util.concurrent.ListenableFuture;
+import com.google_voltpatches.common.util.concurrent.SettableFuture;
 
 public interface CommandLog {
+
     /**
      *
-     * @param context
-     * @param txnId
-     *            The txnId of the truncation snapshot at the end of restore, or
-     * @param partitionCount
+     * @param logSize log size for splitting in segments.
+     * @param txnId The txnId of the truncation snapshot at the end of restore, or
+     * @param coreBinding PosixJNAAffinity bindings.
+     * @param perPartitionTxnId per partition transaction ids
+     * @param partitionCount partition count
      */
     public abstract void init(int logSize,
                                  long txnId,
@@ -39,11 +42,13 @@ public interface CommandLog {
                                  Map<Integer, Long> perPartitionTxnId);
 
     /**
-    *
-     * @param txnId
-     *            The txnId of the truncation snapshot at the end of restore, or
-     *            Long.MIN if there was none.
-     * @param partitionCount
+     *
+     * @param logSize log size for splitting in segments.
+     * @param txnId The txnId of the truncation snapshot at the end of restore, or Long.MIN if there was none.
+     * @param partitionCount Partition count
+     * @param isRejoin Is Rejoin
+     * @param coreBinding PosixJNAAffinity bindings.
+     * @param perPartitionTxnId per partition transaction ids
      */
     public abstract void initForRejoin(int logSize,
                                           long txnId,
@@ -72,10 +77,18 @@ public interface CommandLog {
     public abstract void shutdown() throws InterruptedException;
 
     /**
-     * IV2-only method.  Write this Iv2FaultLogEntry to the fault log portion of the command log
+     * IV2-only method. Write this Iv2FaultLogEntry to the fault log portion of the command log.
+     * @return a settable future that is set true after the entry has been written to disk.
      */
-    public abstract void logIv2Fault(long writerHSId, Set<Long> survivorHSId,
+    public abstract SettableFuture<Boolean> logIv2Fault(long writerHSId, Set<Long> survivorHSId,
             int partitionId, long spHandle);
+
+    /**
+     * Called on the very first message a rejoined SpScheduler receives to initialize the last durable value.
+     * Thread it through here because the durability listener is owned by the command log thread.
+     * @param uniqueId    The last durable unique ID passed from the master.
+     */
+    void initializeLastDurableUniqueId(DurabilityListener listener, long uniqueId);
 
     interface CompletionChecks {
         /**
@@ -83,32 +96,38 @@ public interface CommandLog {
          * @param startSize - pre-allocated size of the next empty transaction list
          * @return the newly created CompletionChecks object
          */
-        public CompletionChecks startNewCheckList(int startSize);
+        CompletionChecks startNewCheckList(int startSize);
 
         /**
          * Add a new transaction to the per-scheduler durable transaction tracker
          * @param task
          */
+        void addTask(TransactionTask task);
 
-        public void addTask(TransactionTask task);
+        /**
+         * Called on the very first message a rejoined SpScheduler receives to initialize the last durable value.
+         * @param uniqueId    The last durable unique ID passed from the master.
+         */
+        void setLastDurableUniqueId(long uniqueId);
+
+        /**
+         * Returns <tt>true</tt> if this instance contains update of durable unique ID.
+         *
+         * @return <tt>true</tt> if this instance contains update of durable unique ID.
+         */
+        boolean isChanged();
+
         /**
          * Get the number of TransactionTasks tracked by this instance of CompletionChecks
          * @return
          */
-        public int getTaskListSize();
+        int getTaskListSize();
 
         /**
          * Perform all class-specific processing for this batch of transactions including
          * Durability Listener notifications
          */
         public void processChecks();
-
-        /**
-         * This is like processChecks but executed when we started a sync but there were no
-         * new transactions. This is used to start non-commmand-logged system procedures
-         * when synchronous command logging is set
-         */
-        public void checkForSyncLoggedSysProcs();
     }
 
     public interface DurabilityListener {
@@ -133,6 +152,12 @@ public interface CommandLog {
         public void addTransaction(TransactionTask pendingTask);
 
         /**
+         * Called on the very first message a rejoined SpScheduler receives to initialize the last durable value.
+         * @param uniqueId    The last durable unique ID passed from the master.
+         */
+        void initializeLastDurableUniqueId(long uniqueId);
+
+        /**
          * Used by CommandLog to calculate the next task list size
          */
         public int getNumberOfTasks();
@@ -148,13 +173,6 @@ public interface CommandLog {
          * @param completionChecks
          */
         void processDurabilityChecks(CompletionChecks completionChecks);
-
-        /**
-        * Make sure Non-Durable SysProcs get executed with Synchronous Command Logging
-        * and no other pending transactions
-        * @param completionChecks
-        */
-        void checkForSyncLoggedSysProcs(CompletionChecks completionChecks);
     }
 
     /**

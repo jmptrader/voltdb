@@ -1,5 +1,5 @@
 /* This file is part of VoltDB.
- * Copyright (C) 2008-2015 VoltDB Inc.
+ * Copyright (C) 2008-2016 VoltDB Inc.
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -359,6 +359,8 @@ public class TestIndexLimitSuite extends RegressionSuite {
         callWithExpectedResult(client, -2, "@AdHoc", "SELECT MIN(B) FROM TMIN WHERE A > 0;");
         callWithExpectedResult(client, -2, "@AdHoc", "SELECT MIN(B) FROM TMIN WHERE A = 1;");
         callWithExpectedResult(client, 1, "@AdHoc", "SELECT MIN(C) FROM TMIN WHERE A = 1 AND B = 1;");
+        callWithExpectedResult(client, -2, "@AdHoc", "SELECT MIN(B) FROM TMIN WHERE B <= 3;");
+        callWithExpectedResult(client, -2, "@AdHoc", "SELECT MIN(B) FROM TMIN WHERE A = 1 AND B <= 3;");
 
         // Test expression index
         callWithExpectedResult(client, 1, "@AdHoc", "SELECT MIN(ABS(B)) FROM TMIN;");

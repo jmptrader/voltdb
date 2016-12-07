@@ -1,5 +1,5 @@
 /* This file is part of VoltDB.
- * Copyright (C) 2008-2015 VoltDB Inc.
+ * Copyright (C) 2008-2016 VoltDB Inc.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as
@@ -41,6 +41,7 @@ import java.util.NavigableMap;
 import java.util.NavigableSet;
 import java.util.Random;
 import java.util.Set;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
@@ -90,6 +91,7 @@ import com.google_voltpatches.common.eventbus.EventBus;
 import com.google_voltpatches.common.eventbus.Subscribe;
 import com.google_voltpatches.common.eventbus.SubscriberExceptionContext;
 import com.google_voltpatches.common.eventbus.SubscriberExceptionHandler;
+import com.google_voltpatches.common.util.concurrent.SettableFuture;
 
 /**
  *  An importer channel distributer that uses zookeeper to coordinate how importer channels are
@@ -263,6 +265,7 @@ public class ChannelDistributer implements ChannelChangeCallback {
     final HostsRef m_hosts = new HostsRef();
     final ChannelsRef m_channels = new ChannelsRef();
     final CallbacksRef m_callbacks = new CallbacksRef();
+    final UnregisteredRef m_unregistered = new UnregisteredRef();
     final AtomicStampedReference<OperationMode> m_mode;
 
     /**
@@ -405,6 +408,11 @@ public class ChannelDistributer implements ChannelChangeCallback {
                 importer != null && !importer.trim().isEmpty(),
                 "importer is null or empty"
                 );
+        Preconditions.checkArgument(
+                !m_unregistered.getReference().contains(importer),
+                "cannot re-register importer %s as it was already unregistered",
+                importer
+                );
         callback = checkNotNull(callback, "callback is null");
 
         if (m_done.get()) return;
@@ -424,6 +432,7 @@ public class ChannelDistributer implements ChannelChangeCallback {
             } while (!m_callbacks.compareAndSet(prev, next, stamp[0], stamp[0]+1));
 
             NavigableSet<String> registered = next.navigableKeySet();
+            NavigableSet<String> unregistered = m_unregistered.getReference();
 
             Iterator<ImporterChannelAssignment> itr = m_undispatched.iterator();
             while (itr.hasNext()) {
@@ -436,6 +445,62 @@ public class ChannelDistributer implements ChannelChangeCallback {
                             dispatch.onChange(assignment);
                         }
                     });
+                    itr.remove();
+                } else if (unregistered.contains(assignment.getImporter())) {
+                    itr.remove();
+                    if (!assignment.getAdded().isEmpty()) {
+                        LOG.warn("(" + m_hostId
+                                + ") discarding assignment to unregistered importer "
+                                + assignment);
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Unregisters the callback assigned to given importer. Once it is
+     * unregistered it can no longer be re-registered
+     *
+     * @param importer
+     */
+    public void unregisterCallback(String importer) {
+        if (   importer == null
+            || !m_callbacks.getReference().containsKey(importer)
+            || m_unregistered.getReference().contains(importer))
+        {
+            return;
+        }
+        if (m_done.get()) return;
+
+        int [] rstamp = new int[]{0};
+        NavigableMap<String,ChannelChangeCallback> rprev = null;
+        NavigableMap<String,ChannelChangeCallback> rnext = null;
+
+        int [] ustamp = new int[]{0};
+        NavigableSet<String> uprev = null;
+        NavigableSet<String> unext = null;
+
+        synchronized(m_undispatched) {
+            do {
+                rprev = m_callbacks.get(rstamp);
+                rnext = ImmutableSortedMap.<String,ChannelChangeCallback>naturalOrder()
+                        .putAll(Maps.filterKeys(rprev, not(equalTo(importer))))
+                        .build();
+            } while (rprev.containsKey(importer) && !m_callbacks.compareAndSet(rprev, rnext, rstamp[0], rstamp[0]+1));
+
+            do {
+                uprev = m_unregistered.get(ustamp);
+                unext = ImmutableSortedSet.<String>naturalOrder()
+                        .addAll(Sets.filter(uprev, not(equalTo(importer))))
+                        .add(importer)
+                        .build();
+            } while (!uprev.contains(importer) && m_unregistered.compareAndSet(uprev, unext, ustamp[0], ustamp[0]+1));
+
+            Iterator<ImporterChannelAssignment> itr = m_undispatched.iterator();
+            while (itr.hasNext()) {
+                final ImporterChannelAssignment assignment = itr.next();
+                if (unext.contains(assignment.getImporter())) {
                     itr.remove();
                 }
             }
@@ -478,8 +543,14 @@ public class ChannelDistributer implements ChannelChangeCallback {
 
             synchronized (m_undispatched) {
                 NavigableSet<String> registered = m_callbacks.getReference().navigableKeySet();
+                NavigableSet<String> unregistered = m_unregistered.getReference();
                 if (registered.contains(assignment.getImporter())) {
                     m_eb.post(assignment);
+                } else if (!assignment.getAdded().isEmpty()
+                        && unregistered.contains(assignment.getImporter())) {
+                    LOG.warn("(" + m_hostId
+                            + ") disgarding assignment to unregistered importer "
+                            + assignment);
                 } else {
                     m_undispatched.add(assignment);
                 }
@@ -490,17 +561,29 @@ public class ChannelDistributer implements ChannelChangeCallback {
     @Override
     @Subscribe
     public void onChange(ImporterChannelAssignment assignment) {
+        if (m_done.get()) {
+            return;
+        }
         ChannelChangeCallback cb = m_callbacks.getReference().get(assignment.getImporter());
-        if (cb != null && !m_done.get()) try {
-            cb.onChange(assignment);
-        } catch (Exception callbackException) {
-            throw loggedDistributerException(
-                    callbackException,
-                    "failed to invoke the onChange() calback for importer %s",
-                    assignment.getImporter()
-                    );
-        } else synchronized(m_undispatched) {
-            m_undispatched.add(assignment);
+        if (cb != null) {
+            try {
+                cb.onChange(assignment);
+            } catch (Exception callbackException) {
+                throw loggedDistributerException(
+                        callbackException,
+                        "failed to invoke the onChange() calback for importer %s",
+                        assignment.getImporter()
+                        );
+            }
+        } else if (   !assignment.getAdded().isEmpty()
+                   && m_unregistered.getReference().contains(assignment.getImporter())) {
+            LOG.warn("(" + m_hostId
+                    + ") disgarding assignment to unregistered importer "
+                    + assignment);
+        } else {
+            synchronized(m_undispatched) {
+                m_undispatched.add(assignment);
+            }
         }
     }
 
@@ -557,6 +640,16 @@ public class ChannelDistributer implements ChannelChangeCallback {
         /** mesh nodes */
         final NavigableMap<String,AtomicInteger> hosts = m_hosts.getReference();
 
+        final int seed;
+
+        AssignChannels(final int seed) {
+            this.seed = seed;
+        }
+
+        AssignChannels() {
+            seed = System.identityHashCode(this);
+        }
+
         @Override
         public void susceptibleRun() throws Exception {
             if (m_mode.getReference() == OperationMode.INITIALIZING) {
@@ -595,7 +688,7 @@ public class ChannelDistributer implements ChannelChangeCallback {
                     hostassoc.add(host);
                 }
             }
-            Collections.shuffle(hostassoc, new Random(System.identityHashCode(this)));
+            Collections.shuffle(hostassoc, new Random(seed));
 
             Iterator<String> hitr = hostassoc.iterator();
             Iterator<ChannelSpec> citr = added.iterator();
@@ -610,7 +703,7 @@ public class ChannelDistributer implements ChannelChangeCallback {
                 // write to each node their assigned channel list
                 NavigableSet<ChannelSpec> previous = null;
                 NavigableSet<ChannelSpec> needed = null;
-                SetNodeChannels setter = null;
+                List<SetNodeChannels> setters = new ArrayList<>();
 
                 for (String host: hosts.navigableKeySet()) {
                     previous = Maps.filterValues(specs,equalTo(host)).navigableKeySet();
@@ -618,17 +711,72 @@ public class ChannelDistributer implements ChannelChangeCallback {
                     if (!needed.equals(previous)) {
                         int version = hosts.get(host).get();
                         byte [] nodedata = asHostData(needed);
-                        setter = new SetNodeChannels(joinZKPath(HOST_DN, host), version, nodedata);
+                        setters.add(new SetNodeChannels(joinZKPath(HOST_DN, host), version, nodedata));
                     }
                 }
                 // wait for the last write to complete
-                if (setter != null) {
-                    setter.getCallbackCode();
+                for (SetNodeChannels setter: setters) {
+                    if (setter.getCallbackCode() != Code.OK && !m_done.get()) {
+                        LOG.warn(
+                                "LEADER (" + m_hostId
+                                + ") Retrying channel assignment because write attempt to "
+                                + setter.path + " failed with " + setter.getCallbackCode()
+                               );
+                        m_es.submit(new AssignChannels(seed));
+                        return;
+                    }
                 }
             } catch (JSONException|IllegalArgumentException e) {
                 LOG.fatal("unable to create json document to assign imported channels to nodes", e);
             }
         }
+    }
+
+    class ClusterTagCallback implements StatCallback {
+        final SettableFuture<Stat> m_fut = SettableFuture.create();
+
+        @Override
+        public void processResult(int rc, String path, Object ctx, Stat stat) {
+            Code code = Code.get(rc);
+            if (code == Code.OK) {
+                m_fut.set(stat);
+            } else if (code != Code.NONODE) {
+                KeeperException e = KeeperException.create(code);
+                m_fut.setException(new DistributerException("failed to stat cluster tags for " + path, e));
+            }
+        }
+
+        public Stat getStat() {
+            try {
+                return m_fut.get();
+            } catch (InterruptedException e) {
+                throw new DistributerException("interrupted while stating cluster tags");
+            } catch (ExecutionException e) {
+                DistributerException de = (DistributerException)e.getCause();
+                throw de;
+            }
+        }
+    }
+
+    /**
+     * @return a string tag that summarizes the zk versions of opmode and catalog
+     */
+    public String getClusterTag() {
+        ClusterTagCallback forCatalog = new ClusterTagCallback();
+        ClusterTagCallback forOpMode = new ClusterTagCallback();
+
+        m_zk.exists(VoltZK.catalogbytes, false, forCatalog, null);
+        m_zk.exists(VoltZK.operationMode, false, forOpMode, null);
+
+        Stat catalogStat = forCatalog.getStat();
+        Stat opModeStat = forOpMode.getStat();
+
+        StringBuilder sb = new StringBuilder(16)
+                .append('c')
+                .append(catalogStat != null ? catalogStat.getVersion() : 0)
+                .append("_o")
+                .append(opModeStat != null ? opModeStat.getVersion() : 0);
+        return sb.toString().intern();
     }
 
     /**
@@ -701,12 +849,6 @@ public class ChannelDistributer implements ChannelChangeCallback {
         public void processResult(int rc, String path, Object ctx, Stat stat) {
             try {
                 internalProcessResult(rc, path, ctx, stat);
-                Code code = Code.get(rc);
-                // no node, or bad version means that we need to work on the assignments
-                // again.
-                if ((code == Code.NONODE || code == Code.BADVERSION) && !m_done.get()) {
-                    m_es.submit(new AssignChannels());
-                }
             } finally {
                 lock.release();
             }
@@ -891,21 +1033,27 @@ public class ChannelDistributer implements ChannelChangeCallback {
 
         @Override
         public void processResult(int rc, String path, Object ctx,
-                List<String> children, Stat stat) {
+                final List<String> children, Stat stat) {
             try {
                 internalProcessResults(rc, path, ctx, children, stat);
                 if (Code.get(rc) != Code.OK || m_done.get()) {
                     return;
                 }
                 m_es.submit(new DistributerRunnable() {
+                    final int participants = children.size();
                     @Override
                     public void susceptibleRun() throws Exception {
                         String candidate = basename.apply(leaderCandidate.getNode());
                         if (!m_isLeader && candidate.equals(ElectLeader.this.children.get().first())) {
                             m_isLeader = true;
                             LOG.info("LEADER (" + m_hostId + ") is now the importer channel leader");
-                            // determine node importer channel assignments
-                            new AssignChannels().run();
+                            if (m_hosts.getReference().size() == participants) {
+                                LOG.info(
+                                        "(" + m_hostId
+                                        + ") LEADER assign channels task triggered on on elector node change"
+                                        );
+                                new AssignChannels().run();
+                            }
                         }
                     }
                 });
@@ -1107,6 +1255,7 @@ public class ChannelDistributer implements ChannelChangeCallback {
                             oldspecs, nspecs, stat.getVersion()
                             );
                     for (ImporterChannelAssignment cassigns: assignment.getImporterChannelAssignments()) {
+                        if (m_done.get()) break;
                         m_eb.post(cassigns);
                     }
                     if (!assignment.getRemoved().isEmpty()) {
@@ -1173,6 +1322,10 @@ public class ChannelDistributer implements ChannelChangeCallback {
                 }
                 LOG.info("(" + m_hostId + ") successfully received channel assignment master copy");
                 if (m_isLeader && !m_done.get()) {
+                    LOG.info(
+                            "(" + m_hostId
+                            + ") LEADER assign channels task triggered on changed master copy receipt"
+                            );
                     m_es.submit(new AssignChannels());
                 }
             } finally {
@@ -1239,6 +1392,10 @@ public class ChannelDistributer implements ChannelChangeCallback {
                     return;
                 }
                 if (m_isLeader && !m_done.get() && next == OperationMode.RUNNING) {
+                    LOG.info(
+                            "(" + m_hostId
+                            + ") LEADER assign channels task triggered on cluster state change"
+                            );
                     m_es.submit(new AssignChannels());
                 }
                 m_eb.post(opmode.get());
@@ -1321,6 +1478,10 @@ public class ChannelDistributer implements ChannelChangeCallback {
                     LOG.info("(" + m_hostId + ") host(s) " + removed + " no longer servicing importer channels");
 
                     if (m_isLeader && !m_done.get()) {
+                        LOG.info(
+                                "(" + m_hostId
+                                + ") LEADER assign channels task triggered on node removal"
+                                );
                         m_es.submit(new AssignChannels());
                     }
                 }
@@ -1369,6 +1530,19 @@ public class ChannelDistributer implements ChannelChangeCallback {
         }
 
         public ChannelsRef() {
+            this(EMPTY_SET, 0);
+        }
+    }
+
+    // a form of type alias
+    final static class UnregisteredRef extends AtomicStampedReference<NavigableSet<String>> {
+        static final NavigableSet<String> EMPTY_SET = ImmutableSortedSet.of();
+
+        public UnregisteredRef(NavigableSet<String> initialRef, int initialStamp) {
+            super(initialRef, initialStamp);
+        }
+
+        public UnregisteredRef() {
             this(EMPTY_SET, 0);
         }
     }
@@ -1456,6 +1630,15 @@ public class ChannelDistributer implements ChannelChangeCallback {
             @Override
             public boolean apply(ImporterChannelAssignment assignment) {
                 return importers.contains(assignment.getImporter());
+            }
+        };
+    }
+
+    public final static <T> Predicate<T> in(final Set<T> set) {
+        return new Predicate<T>() {
+            @Override
+            public boolean apply(T m) {
+                return set.contains(m);
             }
         };
     }

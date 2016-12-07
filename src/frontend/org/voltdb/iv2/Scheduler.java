@@ -1,5 +1,5 @@
 /* This file is part of VoltDB.
- * Copyright (C) 2008-2015 VoltDB Inc.
+ * Copyright (C) 2008-2016 VoltDB Inc.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as
@@ -117,7 +117,9 @@ abstract public class Scheduler implements InitiatorMessageHandler
                     "Received a transaction id at partition " + m_txnEgo.getPartitionId() +
                     " for partition " + ego.getPartitionId() + ". The partition ids should match.", true, null);
         }
-        m_txnEgo = ego;
+        if (m_txnEgo.getTxnId() < ego.getTxnId()) {
+            m_txnEgo = ego;
+        }
     }
 
     final protected TxnEgo advanceTxnEgo()
@@ -161,37 +163,25 @@ abstract public class Scheduler implements InitiatorMessageHandler
     }
 
     /**
-     * Update last seen txnIds in the replay sequencer. This is used on MPI repair.
+     * Update last seen uniqueIds in the replay sequencer. This is used on MPI repair.
      * @param message
      */
-    public void updateLastSeenTxnIds(VoltMessage message)
+    public void updateLastSeenUniqueIds(VoltMessage message)
     {
-        long sequenceWithTxnId = Long.MIN_VALUE;
+        long sequenceWithUniqueId = Long.MIN_VALUE;
 
         boolean commandLog = (message instanceof TransactionInfoBaseMessage &&
                 (((TransactionInfoBaseMessage)message).isForReplay()));
 
-        boolean drV1 = ((message instanceof TransactionInfoBaseMessage &&
-                ((TransactionInfoBaseMessage)message).isForDRv1()));
-
         boolean sentinel = message instanceof MultiPartitionParticipantMessage;
 
-        boolean replay = commandLog || sentinel || drV1;
-
-        assert(!(commandLog && drV1));
-
+        // if replay
         if (commandLog || sentinel) {
-            sequenceWithTxnId = ((TransactionInfoBaseMessage)message).getTxnId();
-        }
-        else if (drV1) {
-            sequenceWithTxnId = ((TransactionInfoBaseMessage)message).getOriginalTxnId();
-        }
-
-        if (replay) {
+            sequenceWithUniqueId = ((TransactionInfoBaseMessage)message).getUniqueId();
             // Update last seen and last polled txnId for replicas
-            m_replaySequencer.updateLastSeenTxnId(sequenceWithTxnId,
+            m_replaySequencer.updateLastSeenUniqueId(sequenceWithUniqueId,
                     (TransactionInfoBaseMessage) message);
-            m_replaySequencer.updateLastPolledTxnId(sequenceWithTxnId,
+            m_replaySequencer.updateLastPolledUniqueId(sequenceWithUniqueId,
                     (TransactionInfoBaseMessage) message);
         }
     }

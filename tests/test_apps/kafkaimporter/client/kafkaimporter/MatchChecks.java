@@ -1,5 +1,5 @@
 /* This file is part of VoltDB.
- * Copyright (C) 2008-2015 VoltDB Inc.
+ * Copyright (C) 2008-2016 VoltDB Inc.
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -21,7 +21,7 @@
  * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-package kafkaimporter.client.kafkaimporter;
+package client.kafkaimporter;
 
 import java.io.IOException;
 
@@ -40,7 +40,7 @@ public class MatchChecks {
     protected static long getMirrorTableRowCount(boolean alltypes, Client client) {
         // check row count in mirror table -- the "master" of what should come back
         // eventually via import
-        String table = alltypes ? "KafkaMirrorTable1" : "KafkaMirrorTable2";
+        String table = alltypes ? "KafkaMirrorTable2" : "KafkaMirrorTable1";
         ClientResponse response = doAdHoc(client, "select count(*) from " + table);
         VoltTable[] countQueryResult = response.getResults();
         VoltTable data = countQueryResult[0];
@@ -79,14 +79,15 @@ public class MatchChecks {
                     sleep = true;
                 }
                 else if (/*cr.getStatus() == ClientResponse.USER_ABORT &&*/
-                        (ss.matches("(?s).*AdHoc transaction [0-9]+ wasn.t planned against the current catalog version.*") ||
+                        (ss.matches("(?s).*AdHoc transaction -?[0-9]+ wasn.t planned against the current catalog version.*") ||
                                 ss.matches(".*Connection to database host \\(.*\\) was lost before a response was received.*") ||
                                 ss.matches(".*Transaction dropped due to change in mastership. It is possible the transaction was committed.*") ||
                                 ss.matches("(?s).*Transaction being restarted due to fault recovery or shutdown.*") ||
                                 ss.matches("(?s).*Invalid catalog update.  Catalog or deployment change was planned against one version of the cluster configuration but that version was no longer live.*")
                         )) {}
                 else if (ss.matches(".*Server is currently unavailable; try again later.*") ||
-                        ss.matches(".*Server is paused and is currently unavailable.*")) {
+                         ss.matches(".*Server is paused.*") ||
+                         ss.matches("(?s).*Server shutdown in progress.*")) {
                     sleep = true;
                 }
                 else {
@@ -151,6 +152,9 @@ public class MatchChecks {
         long importMax = 0;
         long importMin = 0;
 
+        // check row count in import table
+        // String table = alltypes ? "KafkaImportTable2" : "KafkaImportTable1";
+
         ClientResponse response = doAdHoc(client, "select count(key), min(key), max(key) from kafkaimporttable1");
         VoltTable countQueryResult = response.getResults()[0];
         countQueryResult.advanceRow();
@@ -174,6 +178,68 @@ public class MatchChecks {
             return false;
         }
         return true;
+    }
+
+    protected static String getImportStats(Client client) {
+        VoltTable importStats = statsCall(client);
+        String statsString = null;
+
+        while (importStats.advanceRow()) {
+            statsString = importStats.getString("IMPORTER_NAME") + ", " +
+                    importStats.getString("PROCEDURE_NAME") + ", " + importStats.getLong("SUCCESSES") + ", " +
+                    importStats.getLong("FAILURES") + ", " + importStats.getLong("OUTSTANDING_REQUESTS") + ", " +
+                    importStats.getLong("RETRIES");
+            log.info("statsString:" + statsString);
+        }
+        return statsString;
+    }
+
+    protected static String getClusterState(Client client) {
+        VoltTable sysinfo = null;
+
+        try {
+            sysinfo = client.callProcedure("@SystemInformation", "OVERVIEW").getResults()[0];
+        } catch (Exception e) {
+            log.warn("system info query failed");
+            return "";
+        }
+
+        for (int i = 0; i < sysinfo.getRowCount(); i++)
+        {
+            sysinfo.advanceRow();
+            if (sysinfo.get("KEY", VoltType.STRING).equals("CLUSTERSTATE"))
+            {
+                return (String) sysinfo.get("VALUE",VoltType.STRING);
+            }
+        }
+        return "";
+    }
+
+    protected static long[] getImportValues(Client client) {
+        VoltTable importStats = statsCall(client);
+        long stats[] = {0, 0, 0, 0};
+
+        while (importStats.advanceRow()) {
+            int statnum = 0;
+            log.info("getImportValues: " + importStats.getString("PROCEDURE_NAME"));
+            stats[statnum] = importStats.getLong("SUCCESSES"); log.info("\tSUCCESSES: " + stats[statnum++]);
+            stats[statnum] = importStats.getLong("FAILURES"); log.info("\tFAILURES: " + stats[statnum++]);
+            stats[statnum] = importStats.getLong("OUTSTANDING_REQUESTS"); log.info("\tOUTSTANDING_REQUESTS: " + stats[statnum++]);
+            stats[statnum] = importStats.getLong("RETRIES"); log.info("\tRETRIES: " + stats[statnum++]);
+        }
+
+        return stats;
+    }
+
+    protected static VoltTable statsCall(Client client) {
+        VoltTable importStats = null;
+
+        try {
+            importStats = client.callProcedure("@Statistics", "importer", 0).getResults()[0];
+        } catch (Exception e) {
+            log.error("Stats query failed");
+        }
+        return importStats;
     }
 }
 

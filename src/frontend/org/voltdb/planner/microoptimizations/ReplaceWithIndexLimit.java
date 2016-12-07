@@ -1,5 +1,5 @@
 /* This file is part of VoltDB.
- * Copyright (C) 2008-2015 VoltDB Inc.
+ * Copyright (C) 2008-2016 VoltDB Inc.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as
@@ -191,7 +191,7 @@ public class ReplaceWithIndexLimit extends MicroOptimization {
         // there are extra startCondition / endCondition, some filters are not equality
         // 2. Handle equality filters and one other comparison operator (<, <=, >, >=), see comments below
         if (ispn.getLookupType() != IndexLookupType.EQ &&
-                Math.abs(ispn.getSearchKeyExpressions().size() - ExpressionUtil.uncombine(ispn.getEndExpression()).size()) > 1) {
+                Math.abs(ispn.getSearchKeyExpressions().size() - ExpressionUtil.uncombinePredicate(ispn.getEndExpression()).size()) > 1) {
             return plan;
         }
 
@@ -201,10 +201,10 @@ public class ReplaceWithIndexLimit extends MicroOptimization {
         List<AbstractExpression> exprs;
         int numOfSearchKeys = ispn.getSearchKeyExpressions().size();
         if (ispn.getLookupType() == IndexLookupType.LT || ispn.getLookupType() == IndexLookupType.LTE) {
-            exprs = ExpressionUtil.uncombine(ispn.getInitialExpression());
+            exprs = ExpressionUtil.uncombinePredicate(ispn.getInitialExpression());
             numOfSearchKeys -= 1;
         } else {
-            exprs = ExpressionUtil.uncombine(ispn.getEndExpression());
+            exprs = ExpressionUtil.uncombinePredicate(ispn.getEndExpression());
         }
         int numberOfExprs = exprs.size();
 
@@ -221,9 +221,10 @@ public class ReplaceWithIndexLimit extends MicroOptimization {
          * where bindings will be added.
          */
         Index indexToUse = ispn.getCatalogIndex();
+        String tableAlias = ispn.getTargetTableAlias();
         List<AbstractExpression> indexedExprs = null;
         if ( ! indexToUse.getExpressionsjson().isEmpty() ) {
-            StmtTableScan tableScan = m_parsedStmt.m_tableAliasMap.get(ispn.getTargetTableAlias());
+            StmtTableScan tableScan = m_parsedStmt.getStmtTableScanByAlias(tableAlias);
             try {
                 indexedExprs = AbstractExpression.fromJSONArrayString(indexToUse.getExpressionsjson(), tableScan);
             } catch (JSONException e) {
@@ -297,9 +298,7 @@ public class ReplaceWithIndexLimit extends MicroOptimization {
         // do not aggressively evaluate all indexes, just examine the index currently in use;
         // because for all qualified indexes, one access plan must have been generated already,
         // and we can take advantage of that
-        if (!checkIndex(ispn.getCatalogIndex(), aggExpr, exprs, ispn.getBindings(), ispn.getTargetTableAlias())) {
-            return plan;
-        } else {
+        if (checkIndex(ispn.getCatalogIndex(), aggExpr, exprs, ispn.getBindings(), tableAlias)) {
             // we know which end we want to fetch, set the sort direction
             ispn.setSortDirection(sortDirection);
 
@@ -317,7 +316,8 @@ public class ReplaceWithIndexLimit extends MicroOptimization {
                     (ispn.getLookupType() == IndexLookupType.LT || ispn.getLookupType() == IndexLookupType.LTE)){
                 ispn.setLookupType(IndexLookupType.GTE);
                 ispn.removeLastSearchKey();
-                ispn.addEndExpression(ExpressionUtil.uncombine(ispn.getInitialExpression()).get(numberOfExprs - 1));
+                ispn.addEndExpression(ExpressionUtil.uncombinePredicate(ispn.getInitialExpression()).get(numberOfExprs - 1));
+                ispn.setSkipNullPredicate(numOfSearchKeys);
                 ispn.resetPredicate();
             }
             // add an inline LIMIT plan node to this index scan plan node
@@ -334,7 +334,7 @@ public class ReplaceWithIndexLimit extends MicroOptimization {
             if (sortDirection == SortDirectionType.DESC &&
                     !ispn.getSearchKeyExpressions().isEmpty() &&
                     exprs.isEmpty() &&
-                    ExpressionUtil.uncombine(ispn.getInitialExpression()).isEmpty()) {
+                    ExpressionUtil.uncombinePredicate(ispn.getInitialExpression()).isEmpty()) {
                 AbstractExpression newPredicate = new ComparisonExpression();
                 if (ispn.getLookupType() == IndexLookupType.GT)
                     newPredicate.setExpressionType(ExpressionType.COMPARE_GREATERTHAN);
@@ -346,9 +346,8 @@ public class ReplaceWithIndexLimit extends MicroOptimization {
                 ispn.clearSearchKeyExpression();
                 aggplan.setPrePredicate(newPredicate);
             }
-
-            return plan;
         }
+        return plan;
     }
 
     private Index findQualifiedIndex(SeqScanPlanNode seqScan, AbstractExpression aggExpr, List<AbstractExpression> bindingExprs) {
@@ -390,8 +389,7 @@ public class ReplaceWithIndexLimit extends MicroOptimization {
         } else {
             // either pure expression index or mix of expressions and simple columns
             List<AbstractExpression> indexedExprs = null;
-            StmtTableScan tableScan = m_parsedStmt.m_tableAliasMap.get(fromTableAlias);
-
+            StmtTableScan tableScan = m_parsedStmt.getStmtTableScanByAlias(fromTableAlias);
             try {
                 indexedExprs = AbstractExpression.fromJSONArrayString(exprsjson, tableScan);
             } catch (JSONException e) {

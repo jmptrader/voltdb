@@ -1,5 +1,5 @@
 /* This file is part of VoltDB.
- * Copyright (C) 2008-2015 VoltDB Inc.
+ * Copyright (C) 2008-2016 VoltDB Inc.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as
@@ -172,6 +172,15 @@ class MpRoSitePool {
                 m_idleSites.remove(site);
             }
         }
+    }
+
+    /**
+     * update cluster settings
+     */
+    void updateSettings(CatalogContext context, CatalogSpecificPlanner csp)
+    {
+        m_catalogContext = context;
+        m_csp = csp;
     }
 
     /**

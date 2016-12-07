@@ -1,5 +1,5 @@
 /* This file is part of VoltDB.
- * Copyright (C) 2008-2015 VoltDB Inc.
+ * Copyright (C) 2008-2016 VoltDB Inc.
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -30,10 +30,12 @@ import java.io.OutputStream;
 import java.net.Socket;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Random;
+import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 
 import org.apache.log4j.Level;
@@ -50,14 +52,12 @@ import org.voltdb.regressionsuites.RegressionSuite;
 import org.voltdb.regressionsuites.TestSQLTypesSuite;
 import org.voltdb.utils.VoltFile;
 
-import com.google_voltpatches.common.collect.ImmutableMap;
-
 /**
- * End to end Import tests using the injected socket importer.
- *
+ * Import statistics tests using the socket importer and a test log4j importer.
  */
 
 public class TestImportStatistics extends RegressionSuite {
+    private static final String SERVER_SOCKET_IMPORTER_NAME = "SocketServerImporter";
     private static final Logger s_testSocketLogger = Logger.getLogger("testSocketLogger");
     private static final Level[] s_levels =
         { Level.DEBUG, Level.ERROR, Level.FATAL, Level.INFO, Level.TRACE, Level.WARN };
@@ -234,16 +234,57 @@ public class TestImportStatistics extends RegressionSuite {
         }
     }
 
+    private static Set<String> expectedImporters = new HashSet<>();
+    static {
+        expectedImporters.add("SocketServerImporter");
+        expectedImporters.add("Log4jSocketHandlerImporter");
+    };
+    private static final String CONN_HOST_COL = "CONNECTION_HOSTNAME";
+    private static final String PROC_NAME_COL = "PROCEDURE_NAME";
+    private static final String INVOCATIONS_COL = "INVOCATIONS";
+
     private void waitForLogEvents(Client client, int count) throws Exception {
-        //Wait 20 sec to get out of backpressure.
-        long end = System.currentTimeMillis() + 20000;
+        //Wait 60 sec to get out of backpressure.
+        long end = System.currentTimeMillis() + 60000;
+        int successCount = 0;
+        Map<String, Boolean> expectedInovcations = new HashMap<>();
+        {
+            expectedInovcations.put("TestImportStatistics$TestStatsProcedure7",
+                            false);
+            expectedInovcations.put("TestImportStatistics$TestStatsProcedure11",
+                            false);
+            expectedInovcations.put("log_events.insert",
+                            false);
+        };
         while (System.currentTimeMillis() < end) {
-            ClientResponse response = client.callProcedure("@AdHoc", "select count(*) from log_events");
+            ClientResponse response = client.callProcedure("@Statistics", "INITIATOR", 0);
             assertEquals(ClientResponse.SUCCESS, response.getStatus());
-            if (count == response.getResults()[0].asScalarLong()) {
-                break;
+            VoltTable stats = response.getResults()[0];
+            for (int i=0; i<stats.getRowCount(); i++) {
+                VoltTableRow row = stats.fetchRow(i);
+                String name = row.getString(CONN_HOST_COL);
+                if (!expectedImporters.contains(name)) {
+                    continue;
+                }
+
+                String proc = row.getString(PROC_NAME_COL);
+                assert(expectedInovcations.containsKey(proc));
+                if (!expectedInovcations.get(proc)) {
+                    long invocations = row.getLong(INVOCATIONS_COL);
+                    if (count == invocations) {
+                        expectedInovcations.put(proc, true);
+                        successCount += 1;
+                    }
+
+                }
+            }
+            if (successCount == expectedInovcations.size()) {
+                    break;
             }
             Thread.sleep(50);
+        }
+        if (successCount < expectedInovcations.size()) {
+            fail("fail to get out backpressure for 40 Sec");
         }
     }
 
@@ -259,7 +300,7 @@ public class TestImportStatistics extends RegressionSuite {
             String name = row.getString(ImporterStatsCollector.IMPORTER_NAME_COL);
             long expectedFailures = 0;
             String procName = row.getString(ImporterStatsCollector.PROC_NAME_COL);
-            if (name.equals("SocketImporter")) {
+            if (SERVER_SOCKET_IMPORTER_NAME.equals(name)) {
                 expectedFailures = m_expectedSocketFailures.get(procName);
                 numSocketsFound++;
             } else if (name.equals("Log4jSocketHandlerImporter")) {
@@ -295,7 +336,7 @@ public class TestImportStatistics extends RegressionSuite {
             long lastFailures = 0;
             long lastSuccesses = 0;
             String procName = row.getString(ImporterStatsCollector.PROC_NAME_COL);
-            if (name.equals("SocketImporter")) {
+            if (SERVER_SOCKET_IMPORTER_NAME.equals(name)) {
                 expectedFailures = m_expectedSocketFailures.get(procName);
                 lastFailures = m_lastSocketFailures.containsKey(procName) ? m_lastSocketFailures.get(procName) : 0;
                 lastSuccesses = m_lastSocketSuccesses.containsKey(procName) ? m_lastSocketSuccesses.get(procName) : 0;
@@ -312,7 +353,7 @@ public class TestImportStatistics extends RegressionSuite {
             assertEquals(procName, row.getString(ImporterStatsCollector.PROC_NAME_COL));
             assertEquals(expectedFailures-lastFailures, row.getLong(ImporterStatsCollector.FAILURE_COUNT_COL));
             assertEquals(count-expectedFailures-lastSuccesses, row.getLong(ImporterStatsCollector.SUCCESS_COUNT_COL));
-            if (name.equals("SocketImporter")) {
+            if (SERVER_SOCKET_IMPORTER_NAME.equals(name)) {
                 m_lastSocketFailures.put(procName, expectedFailures);
                 m_lastSocketSuccesses.put(procName, count-expectedFailures);
             } else if (name.equals("Log4jSocketHandlerImporter")) {
@@ -402,7 +443,7 @@ public class TestImportStatistics extends RegressionSuite {
             VoltTableRow row = stats.fetchRow(i);
             String name = row.getString(ImporterStatsCollector.IMPORTER_NAME_COL);
             String procName = row.getString(ImporterStatsCollector.PROC_NAME_COL);
-            if (!name.equals("SocketImporter")) {
+            if (!SERVER_SOCKET_IMPORTER_NAME.equals(name)) {
                 continue;
             }
             assertEquals(procName, row.getString(ImporterStatsCollector.PROC_NAME_COL));
@@ -427,7 +468,7 @@ public class TestImportStatistics extends RegressionSuite {
             for (int i=0; i<stats.getRowCount(); i++) {
                 VoltTableRow row = stats.fetchRow(i);
                 String name = row.getString(ImporterStatsCollector.IMPORTER_NAME_COL);
-                if (!name.equals("SocketImporter")) {
+                if (!SERVER_SOCKET_IMPORTER_NAME.equals(name)) {
                     continue;
                 }
                 assertEquals(0, row.getLong(ImporterStatsCollector.FAILURE_COUNT_COL));
@@ -499,29 +540,26 @@ public class TestImportStatistics extends RegressionSuite {
         project.addProcedures(TestStatsProcedure11.class);
 
         // configure socket importer
-        Properties props = new Properties();
-        props.putAll(ImmutableMap.<String, String>of(
+        Properties props = buildProperties(
                 "port", "7001",
                 "decode", "true",
-                "procedure", "TestImportStatistics$TestStatsProcedure7"));
+                "procedure", "TestImportStatistics$TestStatsProcedure7");
         project.addImport(true, "custom", "csv", "socketstream.jar", props);
         project.addPartitionInfo("importTable", "PKEY");
 
         // another socket importer
-        props = new Properties();
-        props.putAll(ImmutableMap.<String, String>of(
+        props = buildProperties(
                 "port", "7002",
                 "decode", "true",
-                "procedure", "TestImportStatistics$TestStatsProcedure11"));
+                "procedure", "TestImportStatistics$TestStatsProcedure11");
         project.addImport(true, "custom", "csv", "socketstream.jar", props);
         project.addPartitionInfo("importTable", "PKEY");
 
         // configure log4j socket handler importer
-        props = new Properties();
-        props.putAll(ImmutableMap.<String, String>of(
+        props = buildProperties(
                 "port", "6060",
                 "procedure", "log_events.insert",
-                "log-event-table", "log_events"));
+                "log-event-table", "log_events");
         project.addImport(true, "custom", null, "log4jsocketimporter.jar", props);
 
         config = new LocalCluster("import-stats-ddl-cluster-rep.jar", 4, 1, 0,

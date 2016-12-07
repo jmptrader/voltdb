@@ -33,7 +33,6 @@ package org.hsqldb_voltpatches;
 
 import java.math.BigDecimal;
 
-import org.hsqldb_voltpatches.HsqlNameManager.HsqlName;
 import org.hsqldb_voltpatches.lib.ArrayUtil;
 import org.hsqldb_voltpatches.lib.HsqlArrayList;
 import org.hsqldb_voltpatches.lib.IntKeyIntValueHashMap;
@@ -402,6 +401,19 @@ public class ParserBase {
         return false;
     }
 
+    boolean readUntilThis(int tokenId) {
+
+        while (token.tokenType != Tokens.X_ENDPARSE) {
+           if (token.tokenType == tokenId) {
+               return true;
+           }
+
+           read();
+        }
+
+        return false;
+    }
+
     int readInteger() {
 
         boolean minus = false;
@@ -651,11 +663,15 @@ public class ParserBase {
         return type;
     }
 
+    /*
+     * This map associates HSQL token types with Volt Operation types.
+     */
     private static final IntKeyIntValueHashMap expressionTypeMap =
         new IntKeyIntValueHashMap(37);
 
     static {
-
+        // Statically initialize the expressionTypeMap.
+        //
         // comparison
         expressionTypeMap.put(Tokens.EQUALS, OpTypes.EQUAL);
         expressionTypeMap.put(Tokens.GREATER, OpTypes.GREATER);
@@ -680,6 +696,12 @@ public class ParserBase {
         expressionTypeMap.put(Tokens.STDDEV_SAMP, OpTypes.STDDEV_SAMP);
         expressionTypeMap.put(Tokens.VAR_POP, OpTypes.VAR_POP);
         expressionTypeMap.put(Tokens.VAR_SAMP, OpTypes.VAR_SAMP);
+        // Windowed aggregate operators go here.
+        expressionTypeMap.put(Tokens.RANK, OpTypes.WINDOWED_RANK);
+        expressionTypeMap.put(Tokens.DENSE_RANK, OpTypes.WINDOWED_DENSE_RANK);
+        // No support for these yet.
+        // expressionTypeMap.put(Tokens.PERCENT_RANK, OpTypes.WINDOWED_PERCENT_RANK);
+        // expressionTypeMap.put(Tokens.CUME_DIST, OpTypes.WINDOWED_CUME_DIST);
     }
 
     HsqlException unexpectedToken(String tokenS) {
@@ -791,6 +813,7 @@ public class ParserBase {
     }
     /**********************************************************************/
     // A VoltDB extension to make it easier to see SQL statement being parsed in the debugger
+    @Override
     public String toString() {
         return "A subclass of ParserBase parsing <<" + scanner.sqlString + ">>";
     }

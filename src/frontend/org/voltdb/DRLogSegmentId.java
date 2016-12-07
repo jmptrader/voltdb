@@ -1,5 +1,5 @@
 /* This file is part of VoltDB.
- * Copyright (C) 2008-2015 VoltDB Inc.
+ * Copyright (C) 2008-2016 VoltDB Inc.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as
@@ -17,12 +17,16 @@
 
 package org.voltdb;
 
+import java.io.Serializable;
+
 import org.voltdb.iv2.UniqueIdGenerator;
 
 import com.google_voltpatches.common.base.Preconditions;
 
-public class DRLogSegmentId {
-    public static final short MAX_CLUSTER_ID = (1 << 8) - 1;
+public class DRLogSegmentId implements Serializable {
+    private static final long serialVersionUID = 2540289527683570995L;
+
+    public static final short MAX_CLUSTER_ID = (1 << 7) - 1;
     public static final long MAX_SEQUENCE_NUMBER = (1L << 55) - 1L;
 
     public static final long UNINITIALIZED_SEQUENCE_NUMBER = -1L;
@@ -65,8 +69,37 @@ public class DRLogSegmentId {
         return ((long)1 << 63) | ((long)clusterId << 55) | MAX_SEQUENCE_NUMBER;
     }
 
+    public static long makeInitialAckDRId(int clusterId) {
+        return makeDRIdFromComponents(clusterId, 0L) - 1L;
+    }
+
+    /*
+     * Empty DR Id is used as a sentinel
+     * 1) in EndOfSnapshotBuffer to indicate the partition doesn't have any snapshot buffer,
+     * 2) in registerLastAckedSegmentId() when the partition has no tracker to recover.
+     *
+     * Empty DR Id has the highest significant bit been set, but there is one exception that
+     * if all bits are set then it belongs to cluster 0's Initial Ack DR Id, not Empty DR Id
+     * for cluster 255.
+     */
     public static boolean isEmptyDRId (long drId) {
-        return (drId >>> 63) == (long)1;
+        return ((drId >>> 63) == 1L) && (drId != -1);
+    }
+
+    /*
+     * Initial Ack DR Id is used as initial value for DR Idempotency filter
+     */
+    public static boolean isInitialAckDRId(long drId) {
+        if (drId == -1) return true;
+        int clusterId = getClusterIdFromDRId(drId);
+        if (clusterId >= 0 && clusterId <= MAX_CLUSTER_ID) {
+            return ((drId >>> 63) != 1L) && (getSequenceNumberFromDRId(drId) == MAX_SEQUENCE_NUMBER);
+        }
+        return false;
+    }
+
+    public static boolean seqIsBeforeZero(long drId) {
+        return (getSequenceNumberFromDRId(-1L) == getSequenceNumberFromDRId(drId));
     }
 
     public static int getClusterIdFromDRId(long drId) {
@@ -81,6 +114,22 @@ public class DRLogSegmentId {
         return (drId < 0 ? drId : (drId & MAX_SEQUENCE_NUMBER));
     }
 
+    public static String getDebugStringFromDRId(long drId) {
+        if (drId == Long.MAX_VALUE) {
+            return "QUEUE EMPTY";
+        }
+        if (isEmptyDRId(drId)) {
+            return String.format("%d:Empty DR ID", getClusterIdFromDRId(drId));
+        }
+        if (isInitialAckDRId(drId)) {
+            if (drId == -1) {
+                return "0:Init Ack ID";
+            }
+            return String.format("%d:Init Ack ID", getClusterIdFromDRId(drId) + 1);
+        }
+        return String.format("%d:%d", getClusterIdFromDRId(drId), getSequenceNumberFromDRId(drId));
+    }
+
     public static class MutableBinaryLogInfo {
         public long drId;
         public long spUniqueId;
@@ -88,8 +137,14 @@ public class DRLogSegmentId {
 
         public MutableBinaryLogInfo() {
             drId = Long.MIN_VALUE;
-            spUniqueId = Long.MIN_VALUE;
-            mpUniqueId = Long.MIN_VALUE;
+            spUniqueId = 0;
+            mpUniqueId = 0;
+        }
+
+        public void reset() {
+            drId = Long.MIN_VALUE;
+            spUniqueId = 0;
+            mpUniqueId = 0;
         }
 
         public DRLogSegmentId toImmutable() {

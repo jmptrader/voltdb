@@ -1,5 +1,5 @@
 /* This file is part of VoltDB.
- * Copyright (C) 2008-2015 VoltDB Inc.
+ * Copyright (C) 2008-2016 VoltDB Inc.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as
@@ -19,7 +19,10 @@ package org.voltdb;
 
 import org.voltcore.logging.VoltLogger;
 import org.voltcore.utils.CoreUtils;
-import org.voltdb.compiler.deploymentfile.PathsType;
+import org.voltdb.AuthSystem.AuthUser;
+import org.voltdb.client.BatchTimeoutOverrideType;
+import org.voltdb.client.ClientResponse;
+import org.voltdb.client.SyncCallback;
 import org.voltdb.compiler.deploymentfile.ResourceMonitorType;
 import org.voltdb.compiler.deploymentfile.SystemSettingsType;
 import org.voltdb.utils.PlatformProperties;
@@ -30,7 +33,7 @@ import org.voltdb.utils.SystemStatsCollector.Datum;
  * Used to periodically check if the server's resource utilization is above the configured limits
  * and pause the server.
  */
-public class ResourceUsageMonitor implements Runnable, InternalConnectionContext
+public class ResourceUsageMonitor implements Runnable
 {
     private static final VoltLogger m_logger = new VoltLogger("HOST");
 
@@ -39,7 +42,7 @@ public class ResourceUsageMonitor implements Runnable, InternalConnectionContext
     private int m_resourceCheckInterval;
     private DiskResourceChecker m_diskLimitConfig;
 
-    public ResourceUsageMonitor(SystemSettingsType systemSettings, PathsType pathsConfig)
+    public ResourceUsageMonitor(SystemSettingsType systemSettings)
     {
         if (systemSettings == null || systemSettings.getResourcemonitor() == null) {
             return;
@@ -55,7 +58,7 @@ public class ResourceUsageMonitor implements Runnable, InternalConnectionContext
             m_rssLimit = Double.valueOf(dblLimit).longValue();
         }
 
-        m_diskLimitConfig = new DiskResourceChecker(systemSettings, pathsConfig);
+        m_diskLimitConfig = new DiskResourceChecker(systemSettings);
     }
 
     public boolean hasResourceLimitsConfigured()
@@ -94,13 +97,41 @@ public class ResourceUsageMonitor implements Runnable, InternalConnectionContext
     @Override
     public void run()
     {
-        if (VoltDB.instance().getMode() != OperationMode.RUNNING) {
+        if (getClusterOperationMode() != OperationMode.RUNNING) {
             return;
         }
 
         if (isOverMemoryLimit() || m_diskLimitConfig.isOverLimitConfiguration()) {
-            VoltDB.instance().getClientInterface().getInternalConnectionHandler().callProcedure(this, null, 0, "@Pause");
+            SyncCallback cb = new SyncCallback();
+            if (getConnectionHadler().callProcedure(getInternalUser(), true, BatchTimeoutOverrideType.NO_TIMEOUT, cb, "@Pause")) {
+                try {
+                    cb.waitForResponse();
+                } catch (InterruptedException e) {
+                    m_logger.error("Interrupted while pausing cluster for resource overusage", e);
+                }
+                ClientResponseImpl r = ClientResponseImpl.class.cast(cb.getResponse());
+                if (r.getStatus() != ClientResponse.SUCCESS) {
+                    m_logger.error("Unable to pause cluster for resource overusage: " + r.getStatusString());
+                }
+            } else {
+                m_logger.error("Unable to pause cluster for resource overusage: failed to invoke @Pause");
+            }
         }
+    }
+
+    private OperationMode getClusterOperationMode()
+    {
+        return VoltDB.instance().getMode();
+    }
+
+    private InternalConnectionHandler getConnectionHadler()
+    {
+        return VoltDB.instance().getClientInterface().getInternalConnectionHandler();
+    }
+
+    private AuthUser getInternalUser()
+    {
+        return VoltDB.instance().getCatalogContext().authSystem.getInternalAdminUser();
     }
 
     private boolean isOverMemoryLimit()
@@ -139,18 +170,6 @@ public class ResourceUsageMonitor implements Runnable, InternalConnectionContext
         } else {
             return value + " bytes";
         }
-    }
-
-    @Override
-    public String getName()
-    {
-        return "ResourceUsageMonitor";
-    }
-
-    @Override
-    public void setBackPressure(boolean hasBackPressure)
-    {
-        // nothing to do here.
     }
 
     // package-private for junit

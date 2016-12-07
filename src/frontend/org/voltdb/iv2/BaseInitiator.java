@@ -1,5 +1,5 @@
 /* This file is part of VoltDB.
- * Copyright (C) 2008-2015 VoltDB Inc.
+ * Copyright (C) 2008-2016 VoltDB Inc.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as
@@ -26,10 +26,7 @@ import org.voltcore.utils.CoreUtils;
 import org.voltdb.BackendTarget;
 import org.voltdb.CatalogContext;
 import org.voltdb.CatalogSpecificPlanner;
-import org.voltdb.ClientInterfaceRepairCallback;
 import org.voltdb.CommandLog;
-import org.voltdb.ConsumerDRGateway;
-import org.voltdb.DRLogSegmentId;
 import org.voltdb.LoadedProcedureSet;
 import org.voltdb.MemoryStats;
 import org.voltdb.PartitionDRGateway;
@@ -38,7 +35,9 @@ import org.voltdb.StartAction;
 import org.voltdb.StarvationTracker;
 import org.voltdb.StatsAgent;
 import org.voltdb.StatsSelector;
+import org.voltdb.VoltDB;
 import org.voltdb.iv2.SpScheduler.DurableUniqueIdListener;
+import org.voltdb.jni.ExecutionEngine;
 import org.voltdb.rejoin.TaskLog;
 
 /**
@@ -63,7 +62,7 @@ public abstract class BaseInitiator implements Initiator
     protected Site m_executionSite = null;
     protected Thread m_siteThread = null;
     protected final RepairLog m_repairLog = new RepairLog();
-    protected ConsumerDRGateway m_consumerDRGateway = null;
+
     public BaseInitiator(String zkMailboxNode, HostMessenger messenger, Integer partition,
             Scheduler scheduler, String whoamiPrefix, StatsAgent agent,
             StartAction startAction)
@@ -131,12 +130,9 @@ public abstract class BaseInitiator implements Initiator
                           CommandLog cl,
                           String coreBindIds,
                           PartitionDRGateway drGateway,
-                          PartitionDRGateway mpDrGateway,
-                          ConsumerDRGateway consumerDRGateway)
+                          PartitionDRGateway mpDrGateway)
         throws KeeperException, ExecutionException, InterruptedException
     {
-            m_consumerDRGateway = consumerDRGateway;
-
             int snapshotPriority = 6;
             if (catalogContext.cluster.getDeployment().get("deployment") != null) {
                 snapshotPriority = catalogContext.cluster.getDeployment().get("deployment").
@@ -150,7 +146,7 @@ public abstract class BaseInitiator implements Initiator
 
             TaskLog taskLog = null;
             if (m_initiatorMailbox.getJoinProducer() != null) {
-                taskLog = m_initiatorMailbox.getJoinProducer().constructTaskLog(catalogContext.cluster.getVoltroot());
+                taskLog = m_initiatorMailbox.getJoinProducer().constructTaskLog(VoltDB.instance().getVoltDBRootPath());
             }
 
             m_executionSite = new Site(m_scheduler.getQueue(),
@@ -236,17 +232,14 @@ public abstract class BaseInitiator implements Initiator
         assert false;
     }
 
-    @Override
-    public void setConsumerDRGateway(ConsumerDRGateway gateway) {
-        assert m_consumerDRGateway instanceof ConsumerDRGateway.DummyConsumerDRGateway;
-        m_consumerDRGateway = gateway;
-        if (m_term != null && m_consumerDRGateway instanceof ClientInterfaceRepairCallback) {
-            // We're the leader, and this consumer gateway is late to the party
-            m_consumerDRGateway.beginPromotePartition(m_partitionId, new DRLogSegmentId(Long.MIN_VALUE, Long.MIN_VALUE, Long.MIN_VALUE), Long.MIN_VALUE);
-            ClientInterfaceRepairCallback callback = (ClientInterfaceRepairCallback)gateway;
-            callback.repairCompleted(m_partitionId, m_initiatorMailbox.getHSId());
+    abstract protected void acceptPromotion() throws Exception;
+
+    public ExecutionEngine debugGetSpiedEE() {
+        if (m_executionSite.m_backend == BackendTarget.NATIVE_EE_SPY_JNI) {
+            return m_executionSite.m_ee;
+        }
+        else {
+            return null;
         }
     }
-
-    abstract protected void acceptPromotion() throws Exception;
 }

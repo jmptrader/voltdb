@@ -1,5 +1,5 @@
 /* This file is part of VoltDB.
- * Copyright (C) 2008-2015 VoltDB Inc.
+ * Copyright (C) 2008-2016 VoltDB Inc.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as
@@ -42,6 +42,7 @@ import org.voltdb.VoltTable;
 import org.voltdb.exceptions.EEException;
 import org.voltdb.messaging.FastDeserializer;
 import org.voltdb.planner.ActivePlanRepository;
+import org.voltdb.types.PlanNodeType;
 import org.voltdb.utils.LogKeys;
 import org.voltdb.utils.VoltTableUtil;
 
@@ -50,6 +51,7 @@ import org.voltdb.utils.VoltTableUtil;
  * one using JNI and one using IPC. ExecutionEngine provides a consistent interface
  * for these implementations to the ExecutionSite.
  */
+
 public abstract class ExecutionEngine implements FastDeserializer.DeserializationMonitor {
 
     static VoltLogger log = new VoltLogger("HOST");
@@ -57,7 +59,12 @@ public abstract class ExecutionEngine implements FastDeserializer.Deserializatio
     public static enum TaskType {
         VALIDATE_PARTITIONING(0),
         GET_DR_TUPLESTREAM_STATE(1),
-        SET_DR_SEQUENCE_NUMBERS(2);
+        SET_DR_SEQUENCE_NUMBERS(2),
+        SET_DR_PROTOCOL_VERSION(3),
+        SP_JAVA_GET_DRID_TRACKER(4),
+        SET_DRID_TRACKER(5),
+        GENERATE_DR_EVENT(6),
+        RESET_DR_APPLIED_TRACKER(7);
 
         private TaskType(int taskId) {
             this.taskId = taskId;
@@ -65,6 +72,29 @@ public abstract class ExecutionEngine implements FastDeserializer.Deserializatio
 
         public final int taskId;
     }
+
+    // keep sync with DREventType in ee/src/common/types.h
+    public static enum EventType {
+        NOT_A_EVENT(0),
+        POISON_PILL(1),
+        CATALOG_UPDATE(2);
+
+        private EventType(int typeId) {
+            this.typeId = typeId;
+        }
+
+        public final int typeId;
+    }
+
+    public static enum FragmentContext {
+        UNKNOWN,
+        RO_BATCH,
+        RW_BATCH,
+        CATALOG_UPDATE,
+        CATALOG_LOAD
+    }
+
+    private FragmentContext m_fragmentContext = FragmentContext.UNKNOWN;
 
     // is the execution site dirty
     protected boolean m_dirty;
@@ -107,7 +137,6 @@ public abstract class ExecutionEngine implements FastDeserializer.Deserializatio
 
     String m_currentProcedureName = null;
     int m_currentBatchIndex = 0;
-    private boolean m_readOnly;
     private long m_startTime;
     private long m_lastMsgTime;
     private long m_logDuration = INITIAL_LOG_DURATION;
@@ -138,7 +167,7 @@ public abstract class ExecutionEngine implements FastDeserializer.Deserializatio
     }
 
     private boolean shouldTimedOut (long latency) {
-        if (m_readOnly
+        if (m_fragmentContext == FragmentContext.RO_BATCH
                 && m_batchTimeout > NO_BATCH_TIMEOUT_VALUE
                 && m_batchTimeout < latency) {
             return true;
@@ -158,7 +187,7 @@ public abstract class ExecutionEngine implements FastDeserializer.Deserializatio
      * derived classes. This needs to be implemented by each interface
      * as data is required from the execution engine.
      */
-    abstract protected void throwExceptionForError(final int errorCode);
+    protected abstract void throwExceptionForError(final int errorCode);
 
     @Override
     public void deserializedBytes(final int numBytes) {
@@ -212,7 +241,7 @@ public abstract class ExecutionEngine implements FastDeserializer.Deserializatio
 
     private class DependencyTracker {
         private final HashMap<Integer, ArrayDeque<VoltTable>> m_depsById =
-            new HashMap<Integer, ArrayDeque<VoltTable>>();
+            new HashMap<>();
 
         private final VoltLogger hostLog = new VoltLogger("HOST");
 
@@ -224,7 +253,7 @@ public abstract class ExecutionEngine implements FastDeserializer.Deserializatio
         void addDependency(final int depId, final VoltTable vt) {
             ArrayDeque<VoltTable> deque = m_depsById.get(depId);
             if (deque == null) {
-                deque = new ArrayDeque<VoltTable>();
+                deque = new ArrayDeque<>();
                 m_depsById.put(depId, deque);
             }
             deque.add(vt);
@@ -241,7 +270,7 @@ public abstract class ExecutionEngine implements FastDeserializer.Deserializatio
                 // create a new list of references to the workunit's table
                 // to avoid any changes to the WorkUnit's list. But do not
                 // copy the table data.
-                final ArrayDeque<VoltTable> deque = new ArrayDeque<VoltTable>();
+                final ArrayDeque<VoltTable> deque = new ArrayDeque<>();
                 for (VoltTable depTable : e.getValue()) {
                     // A joining node will respond with a table that has this status code
                     if (depTable.getStatusCode() != VoltTableUtil.NULL_DEPENDENCY_STATUS) {
@@ -354,9 +383,7 @@ public abstract class ExecutionEngine implements FastDeserializer.Deserializatio
     }
 
     public long fragmentProgressUpdate(int indexFromFragmentTask,
-            String planNodeName,
-            String lastAccessedTable,
-            long lastAccessedTableSize,
+            int planNodeTypeAsInt,
             long tuplesProcessed,
             long currMemoryInBytes,
             long peakMemoryInBytes)
@@ -374,7 +401,8 @@ public abstract class ExecutionEngine implements FastDeserializer.Deserializatio
         long latency = currentTime - m_startTime;
 
         if (shouldTimedOut(latency)) {
-            String msg = getLongRunningQueriesMessage(indexFromFragmentTask, latency, planNodeName, true);
+
+            String msg = getLongRunningQueriesMessage(indexFromFragmentTask, latency, planNodeTypeAsInt, true);
             log.info(msg);
 
             // timing out the long running queries
@@ -385,7 +413,7 @@ public abstract class ExecutionEngine implements FastDeserializer.Deserializatio
             // The callback was triggered earlier than we were ready to log.
             // If this keeps happening, it might makes sense to ramp up the threshold
             // to lower the callback frequency to something closer to the log duration
-            // (== the desired log message fequency).
+            // (== the desired log message frequency).
             // That probably involves keeping more stats to estimate the recent tuple processing rate.
             // Such a calibration should probably wait until the next "full batch" and NOT immediately
             // reflected in the current return value which effects the remaining processing of the
@@ -399,7 +427,7 @@ public abstract class ExecutionEngine implements FastDeserializer.Deserializatio
             // future callbacks per log entry, ideally so that one callback arrives just in time to log.
             return LONG_OP_THRESHOLD;
         }
-        String msg = getLongRunningQueriesMessage(indexFromFragmentTask, latency, planNodeName, false);
+        String msg = getLongRunningQueriesMessage(indexFromFragmentTask, latency, planNodeTypeAsInt, false);
         log.info(msg);
 
         m_logDuration = (m_logDuration < 30000) ? (2 * m_logDuration) : 30000;
@@ -411,44 +439,59 @@ public abstract class ExecutionEngine implements FastDeserializer.Deserializatio
     }
 
     private String getLongRunningQueriesMessage(int indexFromFragmentTask,
-            long latency, String planNodeName, boolean timeout) {
-        String status = timeout ? "timed out at" : "taking a long time to execute -- at least";
-        String msg = String.format(
-                "Procedure %s is %s " +
-                        "%.2f seconds spent accessing " +
-                        "%d tuples. Current plan fragment " +
-                        "%s in call " +
-                        "%d to voltExecuteSQL on site " +
-                        "%s. Current temp table uses " +
-                        "%d bytes memory, and the peak usage of memory for temp table is " +
-                        "%d bytes.",
-                        m_currentProcedureName,
-                        status,
-                        latency / 1000.0,
-                        m_lastTuplesAccessed,
-                        planNodeName,
-                        m_currentBatchIndex,
-                        CoreUtils.hsIdToString(m_siteId),
-                        m_currMemoryInBytes,
-                        m_peakMemoryInBytes);
+            long latency, int planNodeTypeAsInt, boolean timeout) {
+        StringBuilder sb = new StringBuilder();
+
+        // First describe what is taking a long time.
+        switch (m_fragmentContext) {
+        default:
+        case RO_BATCH:
+        case RW_BATCH:
+            sb.append("Procedure " + m_currentProcedureName);
+            break;
+
+        case CATALOG_UPDATE:
+            sb.append("Catalog update");
+            break;
+
+        case CATALOG_LOAD:
+            sb.append("Catalog load");
+            break;
+        }
+
+        // Timing out (canceling) versus just reporting something taking a long time
+        sb.append(timeout ? " is timed out at " : " is taking a long time to execute -- at least ");
+        sb.append(String.format("%.2f seconds spent accessing %d tuples.",
+                latency / 1000.0, m_lastTuplesAccessed));
+
+        // Type of plan node executing, and index in batch if known.
+        sb.append(" Current plan fragment " + PlanNodeType.get(planNodeTypeAsInt).name());
+        if (indexFromFragmentTask >= 0) {
+            sb.append(" in call " + m_currentBatchIndex + " to voltExecuteSQL");
+        }
+        sb.append(" on site " + CoreUtils.hsIdToString(m_siteId) + ".");
+
+        if (m_currMemoryInBytes > 0 && m_peakMemoryInBytes > 0) {
+            sb.append(" Current temp table uses " + m_currMemoryInBytes + " bytes memory,"
+                    + " and the peak usage of memory for temp tables is " + m_peakMemoryInBytes + " bytes.");
+        }
 
         if (m_sqlTexts != null
                 && indexFromFragmentTask >= 0
                 && indexFromFragmentTask < m_sqlTexts.length) {
-            msg += "  Executing SQL statement is \"" + m_sqlTexts[indexFromFragmentTask] + "\".";
+            sb.append(" Executing SQL statement is \"" + m_sqlTexts[indexFromFragmentTask] + "\".");
         }
         else if (m_sqlTexts == null) {
             // Can this happen?
-            msg += "  SQL statement text is not available.";
+            sb.append(" SQL statement text is not available.");
         }
         else {
             // For some reason, the current index in the fragment task message isn't a valid
             // index into the m_sqlTexts array.  We don't expect this to happen,
             // but let's dump something useful if it does.  (See ENG-7610)
-            StringBuffer sb = new StringBuffer();
-            sb.append("  Unable to report specific SQL statement text for "
-                    + "fragment task message index " + indexFromFragmentTask + ".  ");
-            sb.append("It MAY be one of these " + m_sqlTexts.length + " items: ");
+            sb.append(" Unable to report specific SQL statement text for "
+                    + "fragment task message index " + indexFromFragmentTask + ".");
+            sb.append(" It MAY be one of these " + m_sqlTexts.length + " items: ");
             for (int i = 0; i < m_sqlTexts.length; ++i) {
                 if (m_sqlTexts[i] != null) {
                     sb.append("\"" + m_sqlTexts[i] + "\"");
@@ -461,11 +504,9 @@ public abstract class ExecutionEngine implements FastDeserializer.Deserializatio
                     sb.append(", ");
                 }
             }
-
-            msg += sb.toString();
         }
 
-        return msg;
+        return sb.toString();
     }
 
     /**
@@ -487,7 +528,7 @@ public abstract class ExecutionEngine implements FastDeserializer.Deserializatio
      * Interface frontend invokes to communicate to CPP execution engine.
      */
 
-    abstract public boolean activateTableStream(final int tableId,
+    public abstract boolean activateTableStream(final int tableId,
                                                 TableStreamType type,
                                                 long undoQuantumToken,
                                                 byte[] predicates);
@@ -507,7 +548,7 @@ public abstract class ExecutionEngine implements FastDeserializer.Deserializatio
     public abstract void processRecoveryMessage( ByteBuffer buffer, long pointer);
 
     /** Releases the Engine object. */
-    abstract public void release() throws EEException, InterruptedException;
+    public abstract void release() throws EEException, InterruptedException;
 
     public static byte[] getStringBytes(String string) {
         try {
@@ -517,15 +558,35 @@ public abstract class ExecutionEngine implements FastDeserializer.Deserializatio
         }
     }
 
+    /** Pass the catalog to the engine */
     public void loadCatalog(long timestamp, String serializedCatalog) {
-        loadCatalog(timestamp, getStringBytes(serializedCatalog));
+        try {
+            m_startTime = 0;
+            m_logDuration = INITIAL_LOG_DURATION;
+            m_fragmentContext = FragmentContext.CATALOG_LOAD;
+            coreLoadCatalog(timestamp, getStringBytes(serializedCatalog));
+        }
+        finally {
+            m_fragmentContext = FragmentContext.UNKNOWN;
+        }
     }
 
-    /** Pass the catalog to the engine */
-    abstract protected void loadCatalog(final long timestamp, final byte[] catalogBytes) throws EEException;
+    protected abstract void coreLoadCatalog(final long timestamp, final byte[] catalogBytes) throws EEException;
 
     /** Pass diffs to apply to the EE's catalog to update it */
-    abstract public void updateCatalog(final long timestamp, final String diffCommands) throws EEException;
+    public final void updateCatalog(final long timestamp, final String diffCommands) throws EEException {
+        try {
+            m_startTime = 0;
+            m_logDuration = INITIAL_LOG_DURATION;
+            m_fragmentContext = FragmentContext.CATALOG_UPDATE;
+            coreUpdateCatalog(timestamp, diffCommands);
+        }
+        finally {
+            m_fragmentContext = FragmentContext.UNKNOWN;
+        }
+    }
+
+    protected abstract void coreUpdateCatalog(final long timestamp, final String diffCommands) throws EEException;
 
     public void setBatch(int batchIndex) {
         m_currentBatchIndex = batchIndex;
@@ -549,7 +610,7 @@ public abstract class ExecutionEngine implements FastDeserializer.Deserializatio
     {
         try {
             // For now, re-transform undoQuantumToken to readOnly. Redundancy work in site.executePlanFragments()
-            m_readOnly = (undoQuantumToken == Long.MAX_VALUE) ? true : false;
+            m_fragmentContext = (undoQuantumToken == Long.MAX_VALUE) ? FragmentContext.RO_BATCH : FragmentContext.RW_BATCH;
 
             // reset context for progress updates
             m_startTime = 0;
@@ -569,6 +630,8 @@ public abstract class ExecutionEngine implements FastDeserializer.Deserializatio
             m_cacheMisses = 0;
 
             m_sqlTexts = null;
+
+            m_fragmentContext = FragmentContext.UNKNOWN;
         }
     }
 
@@ -583,11 +646,11 @@ public abstract class ExecutionEngine implements FastDeserializer.Deserializatio
                                                             long undoQuantumToken) throws EEException;
 
     /** Used for test code only (AFAIK jhugg) */
-    abstract public VoltTable serializeTable(int tableId) throws EEException;
+    public abstract VoltTable serializeTable(int tableId) throws EEException;
 
-    abstract public long getThreadLocalPoolAllocations();
+    public abstract long getThreadLocalPoolAllocations();
 
-    abstract public byte[] loadTable(
+    public abstract byte[] loadTable(
         int tableId, VoltTable table, long txnId, long spHandle,
         long lastCommittedSpHandle, long uniqueId, boolean returnUniqueViolations, boolean shouldDRStream,
         long undoToken) throws EEException;
@@ -597,7 +660,7 @@ public abstract class ExecutionEngine implements FastDeserializer.Deserializatio
      * @param logLevels Levels to set
      * @throws EEException
      */
-    abstract public boolean setLogLevels(long logLevels) throws EEException;
+    public abstract boolean setLogLevels(long logLevels) throws EEException;
 
     /**
      * This method should be called roughly every second. It allows the EE
@@ -605,13 +668,13 @@ public abstract class ExecutionEngine implements FastDeserializer.Deserializatio
      * @param time The current time in milliseconds since the epoch. See
      * System.currentTimeMillis();
      */
-    abstract public void tick(long time, long lastCommittedSpHandle);
+    public abstract void tick(long time, long lastCommittedSpHandle);
 
     /**
      * Instruct EE to come to an idle state. Flush Export buffers, finish
      * any in-progress checkpoint, etc.
      */
-    abstract public void quiesce(long lastCommittedSpHandle);
+    public abstract void quiesce(long lastCommittedSpHandle);
 
     /**
      * Retrieve a set of statistics using the specified selector from the StatisticsSelector enum.
@@ -621,7 +684,7 @@ public abstract class ExecutionEngine implements FastDeserializer.Deserializatio
      * @param now Timestamp to return with each row
      * @return Array of results tables. An array of length 0 indicates there are no results. null indicates failure.
      */
-    abstract public VoltTable[] getStats(
+    public abstract VoltTable[] getStats(
             StatsSelector selector,
             int locators[],
             boolean interval,
@@ -699,6 +762,7 @@ public abstract class ExecutionEngine implements FastDeserializer.Deserializatio
                                         long spHandle,
                                         long lastCommittedSpHandle,
                                         long uniqueId,
+                                        int remoteClusterId,
                                         long undoToken) throws EEException;
 
     /**
@@ -758,6 +822,7 @@ public abstract class ExecutionEngine implements FastDeserializer.Deserializatio
             int hostId,
             byte hostname[],
             int drClusterId,
+            int defaultDrBufferSize,
             long tempTableMemory,
             boolean createDrReplicatedStream,
             int compactionThreshold);
@@ -965,6 +1030,7 @@ public abstract class ExecutionEngine implements FastDeserializer.Deserializatio
                                                long spHandle,
                                                long lastCommittedSpHandle,
                                                long uniqueId,
+                                               int remoteClusterId,
                                                long undoToken);
 
     /**
@@ -1007,7 +1073,17 @@ public abstract class ExecutionEngine implements FastDeserializer.Deserializatio
      */
     public native static long nativeGetRSS();
 
-    public native static byte[] getTestDRBuffer();
+    /**
+     * Request a DR buffer payload with specified content, partition key value list and flag list should have the same length
+     * @param compatible request test DR buffer of compatible version if it's set to true
+     * @param partitionId producer partition ID
+     * @param partitionKeyValues list of partition key value that specifies the desired partition key value of each txn
+     * @param flags list of DRTxnPartitionHashFlags that specifies the desired type of each txn
+     * @param startSequenceNumber the starting sequence number of DR buffers
+     * @return payload bytes (only txns with no InvocationBuffer header)
+     */
+    public native static byte[] getTestDRBuffer(boolean compatible, int partitionId, int partitionKeyValues[], int flags[],
+            long startSequenceNumber);
 
     /**
      * Start collecting statistics (starts timer).

@@ -115,3 +115,21 @@ create table ppk (
 );
 
 partition table ppk on column a;
+
+create table floataggs (
+    alpha float,
+    beta  float,
+    gamma float
+);
+
+
+create table ppkcombo (
+  a bigint not null,
+  b bigint not null,
+  c bigint not null,
+  z bigint not null,
+  PRIMARY KEY (a, b ,c)
+);
+create unique index pcover2_ppkCombo on ppkcombo (a, z);
+partition table ppkcombo on column a;
+

@@ -1,5 +1,5 @@
 /* This file is part of VoltDB.
- * Copyright (C) 2008-2015 VoltDB Inc.
+ * Copyright (C) 2008-2016 VoltDB Inc.
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -20,6 +20,7 @@
  * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
  * OTHER DEALINGS IN THE SOFTWARE.
  */
+
 /*
  * This program exercises the socket import capability by writing
  * <key, value> pairs to one or more VoltDB socket importers.
@@ -44,9 +45,8 @@
 package socketimporter.client.socketimporter;
 
 import java.io.FileWriter;
+import java.io.IOException;
 import java.io.OutputStream;
-import java.io.PrintWriter;
-import java.io.StringWriter;
 import java.net.Socket;
 import java.security.SecureRandom;
 import java.util.HashMap;
@@ -56,16 +56,16 @@ import java.util.Timer;
 import java.util.TimerTask;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
-import java.io.IOException;
 
 import org.apache.commons.lang3.RandomStringUtils;
+import org.voltcore.logging.VoltLogger;
 import org.voltcore.utils.Pair;
 import org.voltdb.CLIConfig;
 import org.voltdb.client.Client;
 import org.voltdb.client.ClientFactory;
 import org.voltdb.client.ClientStatsContext;
-import org.voltcore.logging.VoltLogger;
 
 import com.google_voltpatches.common.net.HostAndPort;
 
@@ -160,8 +160,6 @@ public class AsyncBenchmark {
         //AsyncBenchmark.config = config;
         periodicStatsContext = client.createStatsContext();
         fullStatsContext = client.createStatsContext();
-
-
     }
 
     /**
@@ -264,14 +262,15 @@ public class AsyncBenchmark {
             long max_insert_time = checkDB.maxInsertTime();
             thrup = (long) (runCount.get() / ((max_insert_time-benchmarkStartTS)/1000.0));
 
-            log.info(String.format("Import Throughput %d/s, Total Rows %d",
+            if (thrup > 0) { // first time through, calc can be whacky
+                log.info(String.format("Import Throughput %d/s, Total Rows %d",
                     thrup, runCount.get()+warmupCount.get()));
+            }
         } catch (Exception e) {
             log.info("Exception in printStatistics" + e);
-            StringWriter writer = new StringWriter();
-            e.printStackTrace( new PrintWriter(writer,true ));
-            System. out.println("exeption stack is :\n"+writer.toString());
+            e.printStackTrace();
         }
+        log.info("Import stats: " + UtilQueries.getImportStats(client));
     }
 
     /**
@@ -309,62 +308,49 @@ public class AsyncBenchmark {
 
         SecureRandom rnd = new SecureRandom();
         rnd.setSeed(Thread.currentThread().getId());
-        //  TODO: check if this removes discrepancy: long icnt = 0;
-        try {
-            // Run the benchmark loop for the requested warmup time
-            // The throughput may be throttled depending on client configuration
-            log.info("Warming up...");
-            final long warmupEndTime = System.currentTimeMillis() + (1000l * config.warmup);
-            while (warmupEndTime > System.currentTimeMillis()) {
-                String key = Long.toString(rnd.nextLong());
-                String s;
-                if (config.perftest) {
-                    String valString = RandomStringUtils.randomAlphanumeric(1024);
-                    s = key + "," + valString + "\n";
-                } else {
-                    String t = Long.toString(System.currentTimeMillis());
-                    Pair<String,String> p = new Pair<String,String>(key, t);
-                    queue.offer(p);
-                    s = key + "," + t + "\n";
-                }
-                writeFully(s, hap, warmupEndTime);
-                warmupCount.getAndIncrement();
+        log.info("Warming up...");
+        final long warmupEndTime = System.currentTimeMillis() + (1000l * config.warmup);
+        while (warmupEndTime > System.currentTimeMillis()) {
+            String key = Long.toString(rnd.nextLong());
+            String s;
+            if (config.perftest) {
+                String valString = RandomStringUtils.randomAlphanumeric(1024);
+                s = key + "," + valString + "\n";
+            } else {
+                String t = Long.toString(System.currentTimeMillis());
+                Pair<String,String> p = new Pair<String,String>(key, t);
+                queue.offer(p);
+                s = key + "," + t + "\n";
             }
-
-            // print periodic statistics to the console
-            benchmarkStartTS = System.currentTimeMillis();
-            // schedulePeriodicStats();
-
-            // Run the benchmark loop for the requested duration
-            // The throughput may be throttled depending on client configuration
-            // Save the key/value pairs so they can be verified through the database
-            log.info("\nRunning benchmark...");
-            final long benchmarkEndTime = System.currentTimeMillis() + (1000l * config.duration);
-            while (benchmarkEndTime > System.currentTimeMillis()) {
-                String key = Long.toString(rnd.nextLong());
-                String s;
-                if (config.perftest) {
-                    String valString = RandomStringUtils.randomAlphanumeric(16);
-                    s = key + "," + valString + "\n";
-                } else {
-                    String t = Long.toString(System.currentTimeMillis());
-                    Pair<String,String> p = new Pair<String,String>(key, t);
-                    queue.offer(p);
-                    s = key + "," + t + "\n";
-                }
-                writeFully(s, hap, benchmarkEndTime);
-                runCount.getAndIncrement();
-            }
-            haplist.get(hap).flush();
-        } catch (Exception e) {
-            log.info("Exception in runBenchmark" + e);
-            StringWriter writer = new StringWriter();
-            e.printStackTrace( new PrintWriter(writer,true ));
-            System. out.println("exeption stack is :\n"+writer.toString());
-        } finally {
-            // cancel periodic stats printing
-            if (timer != null) timer.cancel();
+            writeFully(s, hap, warmupEndTime);
+            warmupCount.getAndIncrement();
         }
+
+        benchmarkStartTS = System.currentTimeMillis();
+
+        // Run the benchmark loop for the requested duration
+        // The throughput may be throttled depending on client configuration
+        // Save the key/value pairs so they can be verified through the database
+        log.info("\nRunning benchmark...");
+        final long benchmarkEndTime = System.currentTimeMillis() + (1000l * config.duration);
+        while (benchmarkEndTime > System.currentTimeMillis()) {
+            String key = Long.toString(rnd.nextLong());
+            String s;
+            if (config.perftest) {
+                String valString = RandomStringUtils.randomAlphanumeric(16);
+                s = key + "," + valString + "\n";
+            } else {
+                String t = Long.toString(System.currentTimeMillis());
+                Pair<String,String> p = new Pair<String,String>(key, t);
+                queue.offer(p);
+                s = key + "," + t + "\n";
+            }
+            writeFully(s, hap, benchmarkEndTime);
+            runCount.getAndIncrement();
+        }
+        haplist.get(hap).flush();
+        log.info("Benchmark loop complete for this thread.");
+        if (timer != null) timer.cancel();
     }
 
     private void writeFully(String data, HostAndPort hap, long endTime) {
@@ -456,7 +442,9 @@ public class AsyncBenchmark {
             log.info("Starting CheckData methods. Queue size: " + queue.size());
             checkDB.processQueue();
         }
-        cdl.await();
+        log.info("-- waiting for socket writers.");
+        // this hangs occasionally, so adding a timeout with a margin
+        cdl.await(config.duration+config.warmup+1, TimeUnit.SECONDS);
 
         // close socket connections...
         for (HostAndPort hap : haplist.keySet()) {
@@ -476,6 +464,23 @@ public class AsyncBenchmark {
                 checkDB.processQueue();
             }
         }
+
+        // final exit criteria -- queue of outstanding importer requests goes to zero
+        // but with checking for no-progress so we don't get stuck forever.
+        long outstandingRequests = UtilQueries.getImportOutstandingRequests(client);
+        long prev_outstandingRequests = outstandingRequests;
+        int waitloops = 10; // kinda arbitrary but if outstanding requests is not changing for this interval...
+        while (outstandingRequests != 0 && waitloops > 0) {
+            log.info("Importer outstanding requests is " + outstandingRequests + ". Waiting for zero.");
+            outstandingRequests = UtilQueries.getImportOutstandingRequests(client);
+            if (prev_outstandingRequests == outstandingRequests) {
+                log.info("Outstanding requests unchanged since last interval.");
+                waitloops--;
+            }
+            prev_outstandingRequests = outstandingRequests;
+            Thread.sleep(config.displayinterval*1000);
+        }
+
         client.drain();
         client.close();
 

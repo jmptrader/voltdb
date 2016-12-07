@@ -1,5 +1,5 @@
 /* This file is part of VoltDB.
- * Copyright (C) 2008-2015 VoltDB Inc.
+ * Copyright (C) 2008-2016 VoltDB Inc.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as
@@ -172,7 +172,7 @@ public class ExecutionEngineIPC extends ExecutionEngine {
                     }
                 }
                 if (!connected && retries == 1 && target == BackendTarget.NATIVE_EE_IPC) {
-                    System.out.printf("Ready to connect to voltdbipc process on port %d\n", port);
+                    System.out.println("Ready to connect to voltdbipc process on port " + port);
                     System.out.println("Press Enter after you have started the EE process to initiate the connection to the EE");
                     try {
                         System.in.read();
@@ -292,9 +292,97 @@ public class ExecutionEngineIPC extends ExecutionEngine {
                     }
                     dependencyIdBuffer.rewind();
                     sendDependencyTable(dependencyIdBuffer.getInt());
-                    continue;
                 }
-                if (status == kErrorCode_CrashVoltDB) {
+                else if (status == ExecutionEngine.ERRORCODE_PROGRESS_UPDATE) {
+                    m_history.append("GOT PROGRESS_UPDATE... ");
+                    int batchIndex = m_connection.readInt();
+                    int planNodeTypeAsInt = m_connection.readInt();
+                    long tuplesFound = m_connection.readLong();
+                    long currMemoryInBytes = m_connection.readLong();
+                    long peakMemoryInBytes = m_connection.readLong();
+                    long nextStep = fragmentProgressUpdate(batchIndex, planNodeTypeAsInt, tuplesFound,
+                            currMemoryInBytes, peakMemoryInBytes);
+                    m_history.append("...RESPONDING TO PROGRESS_UPDATE...nextStep=" + nextStep);
+                    m_data.clear();
+                    m_data.putLong(nextStep);
+                    m_data.flip();
+                    m_connection.write();
+                    m_history.append(" WROTE RESPONSE TO PROGRESS_UPDATE\n");
+                }
+                else if (status == kErrorCode_pushExportBuffer) {
+                    // Message structure:
+                    // pushExportBuffer error code - 1 byte
+                    // export generation - 8 bytes
+                    // partition id - 4 bytes
+                    // signature length (in bytes) - 4 bytes
+                    // signature - signature length bytes
+                    // uso - 8 bytes
+                    // sync - 1 byte
+                    // end of generation flag - 1 byte
+                    // export buffer length - 4 bytes
+                    // export buffer - export buffer length bytes
+                    long exportGeneration = getBytes(8).getLong();
+                    int partitionId = getBytes(4).getInt();
+                    int signatureLength = getBytes(4).getInt();
+                    byte signatureBytes[] = new byte[signatureLength];
+                    getBytes(signatureLength).get(signatureBytes);
+                    String signature = new String(signatureBytes, "UTF-8");
+                    long uso = getBytes(8).getLong();
+                    boolean sync = getBytes(1).get() == 1 ? true : false;
+                    boolean isEndOfGeneration = getBytes(1).get() == 1 ? true : false;
+                    int length = getBytes(4).getInt();
+                    ExportManager.pushExportBuffer(
+                            exportGeneration,
+                            partitionId,
+                            signature,
+                            uso,
+                            0,
+                            length == 0 ? null : getBytes(length),
+                            sync,
+                            isEndOfGeneration);
+                }
+                else if (status == kErrorCode_getQueuedExportBytes) {
+                    ByteBuffer header = ByteBuffer.allocate(8);
+                    while (header.hasRemaining()) {
+                        final int read = m_socket.getChannel().read(header);
+                        if (read == -1) {
+                            throw new EOFException();
+                        }
+                    }
+                    header.flip();
+
+                    int partitionId = header.getInt();
+                    int signatureLength = header.getInt();
+                    ByteBuffer sigbuf = ByteBuffer.allocate(signatureLength);
+                    while (sigbuf.hasRemaining()) {
+                        final int read = m_socket.getChannel().read(sigbuf);
+                        if (read == -1) {
+                            throw new EOFException();
+                        }
+                    }
+                    sigbuf.flip();
+                    byte signatureBytes[] = new byte[signatureLength];
+                    sigbuf.get(signatureBytes);
+                    String signature = new String(signatureBytes, "UTF-8");
+
+                    long retval = ExportManager.getQueuedExportBytes(partitionId, signature);
+                    ByteBuffer buf = ByteBuffer.allocate(8);
+                    buf.putLong(retval).flip();
+
+                    while (buf.hasRemaining()) {
+                        m_socketChannel.write(buf);
+                    }
+                }
+                else if (status == ExecutionEngine.ERRORCODE_DECODE_BASE64_AND_DECOMPRESS) {
+                    int dataLength = m_connection.readInt();
+                    String data = m_connection.readString(dataLength);
+                    byte[] decodedDecompressedData = Encoder.decodeBase64AndDecompressToBytes(data);
+                    m_data.clear();
+                    m_data.put(decodedDecompressedData);
+                    m_data.flip();
+                    m_connection.write();
+                }
+                else if (status == kErrorCode_CrashVoltDB) {
                     ByteBuffer lengthBuffer = ByteBuffer.allocate(4);
                     while (lengthBuffer.hasRemaining()) {
                         final int read = m_socket.getChannel().read(lengthBuffer);
@@ -336,97 +424,21 @@ public class ExecutionEngineIPC extends ExecutionEngine {
 
                     ExecutionEngine.crashVoltDB(message, traces, filename, lineno);
                 }
-                if (status == kErrorCode_pushExportBuffer) {
-                    // Message structure:
-                    // pushExportBuffer error code - 1 byte
-                    // export generation - 8 bytes
-                    // partition id - 4 bytes
-                    // signature length (in bytes) - 4 bytes
-                    // signature - signature length bytes
-                    // uso - 8 bytes
-                    // sync - 1 byte
-                    // end of generation flag - 1 byte
-                    // export buffer length - 4 bytes
-                    // export buffer - export buffer length bytes
-                    long exportGeneration = getBytes(8).getLong();
-                    int partitionId = getBytes(4).getInt();
-                    int signatureLength = getBytes(4).getInt();
-                    byte signatureBytes[] = new byte[signatureLength];
-                    getBytes(signatureLength).get(signatureBytes);
-                    String signature = new String(signatureBytes, "UTF-8");
-                    long uso = getBytes(8).getLong();
-                    boolean sync = getBytes(1).get() == 1 ? true : false;
-                    boolean isEndOfGeneration = getBytes(1).get() == 1 ? true : false;
-                    int length = getBytes(4).getInt();
-                    ExportManager.pushExportBuffer(
-                            exportGeneration,
-                            partitionId,
-                            signature,
-                            uso,
-                            0,
-                            length == 0 ? null : getBytes(length),
-                            sync,
-                            isEndOfGeneration);
-                    continue;
-                }
-                if (status == kErrorCode_getQueuedExportBytes) {
-                    ByteBuffer header = ByteBuffer.allocate(8);
-                    while (header.hasRemaining()) {
-                        final int read = m_socket.getChannel().read(header);
-                        if (read == -1) {
-                            throw new EOFException();
-                        }
-                    }
-                    header.flip();
-
-                    int partitionId = header.getInt();
-                    int signatureLength = header.getInt();
-                    ByteBuffer sigbuf = ByteBuffer.allocate(signatureLength);
-                    while (sigbuf.hasRemaining()) {
-                        final int read = m_socket.getChannel().read(sigbuf);
-                        if (read == -1) {
-                            throw new EOFException();
-                        }
-                    }
-                    sigbuf.flip();
-                    byte signatureBytes[] = new byte[signatureLength];
-                    sigbuf.get(signatureBytes);
-                    String signature = new String(signatureBytes, "UTF-8");
-
-                    long retval = ExportManager.getQueuedExportBytes(partitionId, signature);
-                    ByteBuffer buf = ByteBuffer.allocate(8);
-                    buf.putLong(retval).flip();
-
-                    while (buf.hasRemaining()) {
-                        m_socketChannel.write(buf);
-                    }
-                    continue;
-                }
-                if (status == ExecutionEngine.ERRORCODE_DECODE_BASE64_AND_DECOMPRESS) {
-                    int dataLength = m_connection.readInt();
-                    String data = m_connection.readString(dataLength);
-                    byte[] decodedDecompressedData = Encoder.decodeBase64AndDecompressToBytes(data);
-                    m_data.clear();
-                    m_data.put(decodedDecompressedData);
-                    m_data.flip();
-                    m_connection.write();
-                    continue;
-                }
-
-                try {
-                    checkErrorCode(status);
+                else {
                     break;
-                }
-                catch (final RuntimeException e) {
-                    if (e instanceof SerializableException) {
-                        throw e;
-                    } else {
-                        throw (IOException)e.getCause();
-                    }
                 }
             }
 
-            return status;
+            try {
+                checkErrorCode(status);
+                return status;
+            }
+            catch (SerializableException e) {
+                throw e;
+            }
+            catch (RuntimeException e) {
+                throw (IOException)e.getCause();
+            }
         }
 
 
@@ -448,6 +460,24 @@ public class ExecutionEngineIPC extends ExecutionEngine {
             resultTablesLengthBytes.flip();
 
             final int resultTablesLength = resultTablesLengthBytes.getInt();
+
+            // check the dirty-ness of the batch
+            final ByteBuffer dirtyBytes = ByteBuffer.allocate(1);
+            while (dirtyBytes.hasRemaining()) {
+                int read = m_socketChannel.read(dirtyBytes);
+                if (read == -1) {
+                    throw new EOFException();
+                }
+            }
+            dirtyBytes.flip();
+            // check if anything was changed
+            final boolean dirty  = dirtyBytes.get() > 0;
+            if (dirty)
+                m_dirty = true;
+
+            if (resultTablesLength <= 0)
+                return;
+
             final ByteBuffer resultTablesBuffer = ByteBuffer
                     .allocate(resultTablesLength);
             //resultTablesBuffer.order(ByteOrder.LITTLE_ENDIAN);
@@ -458,11 +488,6 @@ public class ExecutionEngineIPC extends ExecutionEngine {
                 }
             }
             resultTablesBuffer.flip();
-
-            // check if anything was changed
-            final boolean dirty = resultTablesBuffer.get() > 0;
-            if (dirty)
-                m_dirty = true;
 
             for (int ii = 0; ii < tables.length; ii++) {
                 final int dependencyCount = resultTablesBuffer.getInt(); // ignore the table count
@@ -597,6 +622,7 @@ public class ExecutionEngineIPC extends ExecutionEngine {
             final int hostId,
             final String hostname,
             final int drClusterId,
+            final int defaultDrBufferSize,
             final int tempTableMemory,
             final BackendTarget target,
             final int port,
@@ -627,6 +653,7 @@ public class ExecutionEngineIPC extends ExecutionEngine {
                 m_hostId,
                 m_hostname,
                 drClusterId,
+                defaultDrBufferSize,
                 1024 * 1024 * tempTableMemory,
                 hashinatorConfig,
                 createDrReplicatedStream);
@@ -642,11 +669,13 @@ public class ExecutionEngineIPC extends ExecutionEngine {
         }
     }
 
+    private StringBuffer m_history = new StringBuffer();
     @Override
     public void release() throws EEException, InterruptedException {
         System.out.println("Shutdown IPC connection in progress.");
+        System.out.println("But first, a little history:\n" + m_history );
         m_connection.close();
-        System.out.println("Shutdown IPC connection in done.");
+        System.out.println("Shutdown IPC connection done.");
         m_dataNetworkOrigin.discard();
     }
 
@@ -662,6 +691,7 @@ public class ExecutionEngineIPC extends ExecutionEngine {
             final int hostId,
             final String hostname,
             final int drClusterId,
+            final int defaultDrBufferSize,
             final long tempTableMemory,
             final HashinatorConfig hashinatorConfig,
             final boolean createDrReplicatedStream)
@@ -677,6 +707,7 @@ public class ExecutionEngineIPC extends ExecutionEngine {
         m_data.putInt(partitionId);
         m_data.putInt(hostId);
         m_data.putInt(drClusterId);
+        m_data.putInt(defaultDrBufferSize);
         m_data.putLong(EELoggers.getLogLevels());
         m_data.putLong(tempTableMemory);
         m_data.putInt(createDrReplicatedStream ? 1 : 0);
@@ -696,7 +727,7 @@ public class ExecutionEngineIPC extends ExecutionEngine {
 
     /** write the catalog as a UTF-8 byte string via connection */
     @Override
-    protected void loadCatalog(final long timestamp, final byte[] catalogBytes) throws EEException {
+    protected void coreLoadCatalog(final long timestamp, final byte[] catalogBytes) throws EEException {
         int result = ExecutionEngine.ERRORCODE_ERROR;
         m_data.clear();
 
@@ -721,7 +752,7 @@ public class ExecutionEngineIPC extends ExecutionEngine {
 
     /** write the diffs as a UTF-8 byte string via connection */
     @Override
-    public void updateCatalog(final long timestamp, final String catalogDiffs) throws EEException {
+    public void coreUpdateCatalog(final long timestamp, final String catalogDiffs) throws EEException {
         int result = ExecutionEngine.ERRORCODE_ERROR;
         m_data.clear();
 
@@ -881,23 +912,6 @@ public class ExecutionEngineIPC extends ExecutionEngine {
                     m_data.flip();
                     m_connection.write();
                 }
-                else if (result == ExecutionEngine.ERRORCODE_PROGRESS_UPDATE) {
-                    int batchIndex = m_connection.readInt();
-                    short size = m_connection.readShort();
-                    String planNodeName = m_connection.readString(size);
-                    size = m_connection.readShort();
-                    String lastAccessedTable = m_connection.readString(size);
-                    long lastAccessedTableSize = m_connection.readLong();
-                    long tuplesFound = m_connection.readLong();
-                    long currMemoryInBytes = m_connection.readLong();
-                    long peakMemoryInBytes = m_connection.readLong();
-                    long nextStep = fragmentProgressUpdate(batchIndex, planNodeName, lastAccessedTable, lastAccessedTableSize, tuplesFound,
-                            currMemoryInBytes, peakMemoryInBytes);
-                    m_data.clear();
-                    m_data.putLong(nextStep);
-                    m_data.flip();
-                    m_connection.write();
-                }
                 else if (result == ExecutionEngine.ERRORCODE_SUCCESS) {
                     final VoltTable resultTables[] = new VoltTable[numFragmentIds];
                     for (int ii = 0; ii < numFragmentIds; ii++) {
@@ -915,9 +929,16 @@ public class ExecutionEngineIPC extends ExecutionEngine {
                     // failure
                     return null;
                 }
-            } catch (final IOException e) {
+            }
+            catch (final IOException e) {
+                m_history.append("GOT IOException: " + e.toString());
                 System.out.println("Exception: " + e.getMessage());
                 throw new RuntimeException(e);
+            }
+            catch (final Throwable thrown) {
+                thrown.printStackTrace();
+                m_history.append("GOT Throwable: " + thrown.toString());
+                throw thrown;
             }
         }
     }
@@ -932,7 +953,6 @@ public class ExecutionEngineIPC extends ExecutionEngine {
      */
     @Override
     public void toggleProfiler(final int toggle) {
-        return;
     }
 
 
@@ -943,7 +963,7 @@ public class ExecutionEngineIPC extends ExecutionEngine {
     throws EEException
     {
         if (returnUniqueViolations) {
-            throw new UnsupportedOperationException("Haven't added IPC support for returning unique violatiosn");
+            throw new UnsupportedOperationException("Haven't added IPC support for returning unique violations");
         }
         m_data.clear();
         m_data.putInt(Commands.LoadTable.m_id);
@@ -987,15 +1007,20 @@ public class ExecutionEngineIPC extends ExecutionEngine {
         if (result != ExecutionEngine.ERRORCODE_SUCCESS) {
             throw new EEException(result);
         }
-
-        ByteBuffer responseBuffer = null;
+        /*//
+        // This code will hang expecting input that never arrives
+        // until voltdbipc is extended to respond with information
+        // negative or positive about "unique violations".
         try {
-            responseBuffer = readMessage();
-        } catch (IOException e) {
+            ByteBuffer responseBuffer = readMessage();
+            if (responseBuffer != null) {
+                return responseBuffer.array();
+            }
+        }
+        catch (IOException e) {
             Throwables.propagate(e);
         }
-
-        if (responseBuffer != null) return responseBuffer.array();
+        //*/
         return null;
     }
 
@@ -1264,7 +1289,13 @@ public class ExecutionEngineIPC extends ExecutionEngine {
             remainingBuffer.flip();
             final long remaining = remainingBuffer.getLong();
 
-            final int[] serialized = new int[count];
+            final int[] serialized;
+
+            if (count > 0) {
+                serialized = new int[count];
+            } else {
+                serialized = new int[]{0};
+            }
             for (int i = 0; i < count; i++) {
                 ByteBuffer lengthBuffer = ByteBuffer.allocate(4);
                 while (lengthBuffer.hasRemaining()) {
@@ -1275,17 +1306,14 @@ public class ExecutionEngineIPC extends ExecutionEngine {
                 }
                 lengthBuffer.flip();
                 serialized[i] = lengthBuffer.getInt();
-
                 ByteBuffer view = outputBuffers.get(i).b().duplicate();
                 view.limit(view.position() + serialized[i]);
                 while (view.hasRemaining()) {
                     m_connection.m_socketChannel.read(view);
                 }
             }
-
             return Pair.of(remaining, serialized);
         } catch (final IOException e) {
-            System.out.println("Exception: " + e.getMessage());
             throw new RuntimeException(e);
         }
     }
@@ -1321,7 +1349,6 @@ public class ExecutionEngineIPC extends ExecutionEngine {
         } catch (final IOException e) {
             throw new RuntimeException(e);
         }
-
     }
 
     @Override
@@ -1352,7 +1379,7 @@ public class ExecutionEngineIPC extends ExecutionEngine {
             throw new RuntimeException(e);
         }
 
-        return null;
+        return retval;
     }
 
     @Override
@@ -1451,7 +1478,7 @@ public class ExecutionEngineIPC extends ExecutionEngine {
 
     @Override
     public long applyBinaryLog(ByteBuffer log, long txnId, long spHandle, long lastCommittedSpHandle, long uniqueId,
-                               long undoToken)
+                               int remoteClusterId, long undoToken)
     throws EEException
     {
         m_data.clear();
@@ -1460,6 +1487,7 @@ public class ExecutionEngineIPC extends ExecutionEngine {
         m_data.putLong(spHandle);
         m_data.putLong(lastCommittedSpHandle);
         m_data.putLong(uniqueId);
+        m_data.putInt(remoteClusterId);
         m_data.putLong(undoToken);
         m_data.put(log.array());
 

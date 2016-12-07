@@ -1,5 +1,5 @@
 /* This file is part of VoltDB.
- * Copyright (C) 2008-2015 VoltDB Inc.
+ * Copyright (C) 2008-2016 VoltDB Inc.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as
@@ -133,6 +133,10 @@ public class ExportManager
 
     private volatile Map<String, Pair<Properties, Set<String>>> m_processorConfig = new HashMap<>();
 
+    private int m_exportTablesCount = 0;
+
+    private int m_connCount = 0;
+
     /*
      * Issue a permit when a generation is drained so that when we are truncating if a generation
      * is completely truncated we can wait for the on generation drained task to finish.
@@ -249,8 +253,8 @@ public class ExportManager
                         oldProcessor = m_processor.getAndSet(newProcessor);
                     }
                 } else {
-                    //We deleted last of the generation as we dropped the last export table.
-                    exportLog.info("Last export table dropped processor will be removed: " + m_loaderClass);
+                    //We deleted last of the generation as we dropped the last stream
+                    exportLog.info("Last stream dropped processor will be removed: " + m_loaderClass);
                     oldProcessor = m_processor.getAndSet(null);
                 }
             } catch (Exception e) {
@@ -283,11 +287,15 @@ public class ExportManager
             int myHostId,
             CatalogContext catalogContext,
             boolean isRejoin,
+            boolean forceCreate,
             HostMessenger messenger,
             List<Integer> partitions)
             throws ExportManager.SetupException
     {
         ExportManager em = new ExportManager(myHostId, catalogContext, messenger, partitions);
+        if (forceCreate) {
+            em.clearOverflowData(catalogContext);
+        }
         CatalogMap<Connector> connectors = getConnectors(catalogContext);
 
         m_self = em;
@@ -385,7 +393,24 @@ public class ExportManager
 
         updateProcessorConfig(connectors);
 
-        exportLog.info(String.format("Export is enabled and can overflow to %s.", cluster.getExportoverflow()));
+        exportLog.info(String.format("Export is enabled and can overflow to %s.", VoltDB.instance().getExportOverflowPath()));
+    }
+
+    private void clearOverflowData(CatalogContext catContext) throws ExportManager.SetupException {
+        String overflowDir = VoltDB.instance().getExportOverflowPath();
+        try {
+            exportLog.info(
+                String.format("Cleaning out contents of export overflow directory %s for create with force", overflowDir));
+            VoltFile.recursivelyDelete(new File(overflowDir), false);
+        } catch(IOException e) {
+            String msg = String.format("Error cleaning out export overflow directory %s: %s",
+                    overflowDir, e.getMessage());
+            if (exportLog.isDebugEnabled()) {
+                exportLog.debug(msg, e);
+            }
+            throw new ExportManager.SetupException(msg);
+        }
+
     }
 
     public void startPolling(CatalogContext catalogContext) {
@@ -414,7 +439,7 @@ public class ExportManager
             newProcessor.setProcessorConfig(m_processorConfig);
             m_processor.set(newProcessor);
 
-            File exportOverflowDirectory = new File(catalogContext.cluster.getExportoverflow());
+            File exportOverflowDirectory = new File(VoltDB.instance().getExportOverflowPath());
 
             /*
              * If this is a catalog update providing an existing generation,
@@ -501,7 +526,12 @@ public class ExportManager
             File exportOverflowDirectory, CatalogContext catalogContext,
             CatalogMap<Connector> connectors) throws IOException {
         TreeSet<File> generationDirectories = new TreeSet<File>();
-        for (File f : exportOverflowDirectory.listFiles()) {
+        File files[] = exportOverflowDirectory.listFiles();
+        if (files == null) {
+            //Clean export overflow no generations seen.
+            return;
+        }
+        for (File f : files) {
             if (f.isDirectory()) {
                 if (!f.canRead() || !f.canWrite() || !f.canExecute()) {
                     throw new RuntimeException("Can't one of read/write/execute directory " + f);
@@ -538,12 +568,15 @@ public class ExportManager
 
         // If the export source changes before the previous generation drains
         // then the outstanding exports will go to the new source when export resumes.
+        int connCount = 0;
+        int tableCount = 0;
         for (Connector conn : connectors) {
             // skip disabled connectors
             if (!conn.getEnabled() || conn.getTableinfo().isEmpty()) {
                 continue;
             }
 
+            connCount++;
             Properties properties = new Properties();
             Set<String> tables = new HashSet<>();
 
@@ -551,6 +584,7 @@ public class ExportManager
 
             for (ConnectorTableInfo ti : conn.getTableinfo()) {
                 tables.add(ti.getTable().getTypeName());
+                tableCount++;
             }
 
             if (conn.getConfig() != null) {
@@ -571,7 +605,17 @@ public class ExportManager
             config.put(targetName, connConfig);
         }
 
+        m_connCount = connCount;
+        m_exportTablesCount = tableCount;
         m_processorConfig = config;
+    }
+
+    public int getExportTablesCount() {
+        return m_exportTablesCount;
+    }
+
+    public int getConnCount() {
+        return m_connCount;
     }
 
     public synchronized void updateCatalog(CatalogContext catalogContext, List<Integer> partitions)
@@ -586,7 +630,7 @@ public class ExportManager
             return;
         }
 
-        File exportOverflowDirectory = new File(catalogContext.cluster.getExportoverflow());
+        File exportOverflowDirectory = new File(VoltDB.instance().getExportOverflowPath());
         final int numOfReplicas = catalogContext.getDeployment().getCluster().getKfactor();
 
         ExportGeneration newGeneration = null;
@@ -604,7 +648,7 @@ public class ExportManager
          * This occurs when export is turned on/off at runtime.
          */
         if (m_processor.get() == null) {
-            exportLog.info("First export table created processor will be initialized: " + m_loaderClass);
+            exportLog.info("First stream created processor will be initialized: " + m_loaderClass);
             createInitialExportProcessor(catalogContext, connectors, false, partitions, false);
         }
     }
@@ -677,9 +721,9 @@ public class ExportManager
                         return;
                     }
                     if (!instance.m_generationGhosts.contains(exportGeneration)) {
-                        assert(false);
                         exportLog.error("Could not a find an export generation " + exportGeneration +
                         ". Should be impossible. Discarding export data");
+                        assert(false);
                     }
                 }
                 return;

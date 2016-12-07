@@ -1,5 +1,5 @@
 /* This file is part of VoltDB.
- * Copyright (C) 2008-2015 VoltDB Inc.
+ * Copyright (C) 2008-2016 VoltDB Inc.
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -33,7 +33,6 @@ import org.voltcore.messaging.HeartbeatResponseMessage;
 import org.voltcore.messaging.VoltMessage;
 import org.voltcore.utils.Pair;
 import org.voltdb.ClientResponseImpl;
-import org.voltdb.DRLogSegmentId;
 import org.voltdb.ParameterSet;
 import org.voltdb.StoredProcedureInvocation;
 import org.voltdb.VoltTable;
@@ -387,12 +386,13 @@ public class TestVoltMessageSerialization extends TestCase {
                                            true, false, true);
 
         CompleteTransactionResponseMessage ctrm =
-            new CompleteTransactionResponseMessage(ctm, Long.MAX_VALUE - 4);
+            new CompleteTransactionResponseMessage(ctm);
 
         CompleteTransactionResponseMessage ctrm2 =
             (CompleteTransactionResponseMessage) checkVoltMessage(ctrm);
-        assertEquals(ctrm.getExecutionSiteId(), ctrm.getExecutionSiteId());
         assertEquals(ctrm.getTxnId(), ctrm2.getTxnId());
+        assertEquals(ctrm.getSpHandle(), ctrm2.getSpHandle());
+        assertEquals(ctrm.isRestart(), ctrm2.isRestart());
     }
 
     public void testIv2RepairLogRequestMessage() throws IOException
@@ -446,8 +446,7 @@ public class TestVoltMessageSerialization extends TestCase {
         // simulate the first message in the sequence, sequence must be 0
         Iv2RepairLogResponseMessage r1 = new Iv2RepairLogResponseMessage(
                 0, 10, Long.MAX_VALUE, Long.MAX_VALUE,
-                Pair.<Long, byte[]>of(2L, new byte[] {(byte)1,(byte)2,(byte)3}),
-                Long.MIN_VALUE, new DRLogSegmentId(Long.MIN_VALUE, Long.MIN_VALUE, Long.MIN_VALUE)
+                Pair.<Long, byte[]>of(2L, new byte[] {(byte)1,(byte)2,(byte)3})
                 );
         Iv2RepairLogResponseMessage r2 = (Iv2RepairLogResponseMessage)checkVoltMessage(r1);
         assertEquals(r1.getOfTotal(), r2.getOfTotal());
@@ -455,7 +454,6 @@ public class TestVoltMessageSerialization extends TestCase {
         assertEquals(r1.getTxnId(), r2.getTxnId());
         assertEquals(r1.getRequestId(), r2.getRequestId());
         assertEquals(r1.getSequence(), r2.getSequence());
-        assertTrue(r1.getBinaryLogInfo().equals(r2.getBinaryLogInfo()));
         assertTrue(r1.hasHashinatorConfig());
         assertEquals(r1.getHashinatorVersionedConfig().getFirst(),new Long(2));
     }

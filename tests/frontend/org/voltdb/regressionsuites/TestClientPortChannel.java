@@ -1,5 +1,5 @@
 /* This file is part of VoltDB.
- * Copyright (C) 2008-2015 VoltDB Inc.
+ * Copyright (C) 2008-2016 VoltDB Inc.
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -23,34 +23,38 @@
 
 package org.voltdb.regressionsuites;
 
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
+
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.security.SecureRandom;
 import java.util.Arrays;
 
-import junit.framework.TestCase;
-
+import org.junit.After;
+import org.junit.Before;
+import org.junit.Test;
 import org.voltdb.BackendTarget;
 import org.voltdb.StoredProcedureInvocation;
-import org.voltdb.client.ClientAuthHashScheme;
+import org.voltdb.client.ClientAuthScheme;
 import org.voltdb.client.ConnectionUtil;
 import org.voltdb.compiler.VoltProjectBuilder;
 
-public class TestClientPortChannel extends TestCase {
+public class TestClientPortChannel extends JUnit4LocalClusterTest {
 
     int m_clientPort;
     int m_adminPort;
     LocalCluster m_config;
 
-    public TestClientPortChannel(String name) {
-        super(name);
+    public TestClientPortChannel() {
     }
 
     /**
      * JUnit special method called to setup the test. This instance will start
      * the VoltDB server using the VoltServerConfig instance provided.
      */
-    @Override
+    @Before
     public void setUp() throws Exception {
         m_clientPort = SecureRandom.getInstance("SHA1PRNG").nextInt(2000) + 22000;
         m_adminPort = m_clientPort + 1;
@@ -98,7 +102,7 @@ public class TestClientPortChannel extends TestCase {
      * JUnit special method called to shutdown the test. This instance will
      * stop the VoltDB server using the VoltServerConfig instance provided.
      */
-    @Override
+    @After
     public void tearDown() throws Exception {
         if (m_config != null) {
             m_config.shutDown();
@@ -114,7 +118,7 @@ public class TestClientPortChannel extends TestCase {
         buf.put("database".getBytes("UTF-8"));
         buf.putInt(0);
         buf.put("".getBytes("UTF-8"));
-        buf.put(ConnectionUtil.getHashedPassword(ClientAuthHashScheme.HASH_SHA1, ""));
+        buf.put(ConnectionUtil.getHashedPassword(ClientAuthScheme.HASH_SHA1, ""));
         buf.flip();
         conn.write(buf);
 
@@ -146,12 +150,12 @@ public class TestClientPortChannel extends TestCase {
         ByteBuffer buf = ByteBuffer.allocate(54);
         buf.putInt(50);
         buf.put((byte) 1);
-        buf.put((byte )ClientAuthHashScheme.HASH_SHA256.getValue()); // Add scheme
+        buf.put((byte )ClientAuthScheme.HASH_SHA256.getValue()); // Add scheme
         buf.putInt(8);
         buf.put("database".getBytes("UTF-8"));
         buf.putInt(0);
         buf.put("".getBytes("UTF-8"));
-        buf.put(ConnectionUtil.getHashedPassword(ClientAuthHashScheme.HASH_SHA256, ""));
+        buf.put(ConnectionUtil.getHashedPassword(ClientAuthScheme.HASH_SHA256, ""));
         buf.flip();
         conn.write(buf);
 
@@ -196,9 +200,12 @@ public class TestClientPortChannel extends TestCase {
         channel.close();
     }
 
+    @Test
     public void testLoginMessagesClientPort() throws Exception {
         runBadLoginMessages(m_clientPort);
     }
+
+    @Test
     public void testLoginMessagesAdminPort() throws Exception {
         runBadLoginMessages(m_adminPort);
     }
@@ -254,12 +261,12 @@ public class TestClientPortChannel extends TestCase {
         buf = ByteBuffer.allocate(42);
         buf.putInt(38);
         buf.put((byte) '0');
-        buf.put((byte) ClientAuthHashScheme.HASH_SHA1.getValue());
+        buf.put((byte) ClientAuthScheme.HASH_SHA1.getValue());
         buf.putInt(8);
         buf.put("dataCase".getBytes("UTF-8"));
         buf.putInt(0);
         buf.put("".getBytes("UTF-8"));
-        buf.put(ConnectionUtil.getHashedPassword(ClientAuthHashScheme.HASH_SHA1, ""));
+        buf.put(ConnectionUtil.getHashedPassword(ClientAuthScheme.HASH_SHA1, ""));
         buf.flip();
         channel.write(buf);
         //Now this will fail because bad version will be read.
@@ -287,7 +294,7 @@ public class TestClientPortChannel extends TestCase {
         buf.put("database".getBytes("UTF-8"));
         buf.putInt(0);
         buf.put("".getBytes("UTF-8"));
-        buf.put(ConnectionUtil.getHashedPassword(ClientAuthHashScheme.HASH_SHA1, ""));
+        buf.put(ConnectionUtil.getHashedPassword(ClientAuthScheme.HASH_SHA1, ""));
         buf.flip();
         channel.write(buf);
         //Now this will fail because bad version will be read.
@@ -310,12 +317,12 @@ public class TestClientPortChannel extends TestCase {
         buf = ByteBuffer.allocate(42);
         buf.putInt(38);
         buf.put((byte) '0');
-        buf.put((byte) ClientAuthHashScheme.HASH_SHA1.getValue());
+        buf.put((byte) ClientAuthScheme.HASH_SHA1.getValue());
         buf.putInt(Integer.MAX_VALUE);
         buf.put("database".getBytes("UTF-8"));
         buf.putInt(0);
         buf.put("".getBytes("UTF-8"));
-        buf.put(ConnectionUtil.getHashedPassword(ClientAuthHashScheme.HASH_SHA1, ""));
+        buf.put(ConnectionUtil.getHashedPassword(ClientAuthScheme.HASH_SHA1, ""));
         buf.flip();
         channel.write(buf);
 
@@ -338,14 +345,16 @@ public class TestClientPortChannel extends TestCase {
 
     }
 
+    @Test
     public void testInvocationClientPort() throws Exception {
-        runInvocationMessageTest(ClientAuthHashScheme.HASH_SHA1, m_clientPort);
-        runInvocationMessageTest(ClientAuthHashScheme.HASH_SHA256, m_clientPort);
+        runInvocationMessageTest(ClientAuthScheme.HASH_SHA1, m_clientPort);
+        runInvocationMessageTest(ClientAuthScheme.HASH_SHA256, m_clientPort);
     }
 
+    @Test
     public void testInvocationAdminPort() throws Exception {
-        runInvocationMessageTest(ClientAuthHashScheme.HASH_SHA1, m_adminPort);
-        runInvocationMessageTest(ClientAuthHashScheme.HASH_SHA256, m_adminPort);
+        runInvocationMessageTest(ClientAuthScheme.HASH_SHA1, m_adminPort);
+        runInvocationMessageTest(ClientAuthScheme.HASH_SHA256, m_adminPort);
     }
 
     final int iVERSION = 0;
@@ -366,7 +375,7 @@ public class TestClientPortChannel extends TestCase {
         }
     }
 
-    public void runInvocationMessageTest(ClientAuthHashScheme scheme, int port) throws Exception {
+    public void runInvocationMessageTest(ClientAuthScheme scheme, int port) throws Exception {
         PortConnector channel = new PortConnector("localhost", port);
         channel.connect();
 
@@ -385,7 +394,7 @@ public class TestClientPortChannel extends TestCase {
         //reconnect as we should have bombed.
         channel.connect();
         //Send login message before invocation.
-        if (scheme == ClientAuthHashScheme.HASH_SHA1)
+        if (scheme == ClientAuthScheme.HASH_SHA1)
             login(channel);
         else
             loginSha2(channel);
@@ -424,7 +433,7 @@ public class TestClientPortChannel extends TestCase {
         //Bad protocol version
         System.out.println("Testing good Ping invocation with bad protocol version.");
         byte bad_proto[] = VAR1.clone();
-        bad_proto[iVERSION] = StoredProcedureInvocation.CURRENT_MOST_RECENT_VERSION + 1;
+        bad_proto[iVERSION] = (byte) (StoredProcedureInvocation.CURRENT_MOST_RECENT_VERSION + 1);
         verifyInvocation(bad_proto, channel, ERROR_CODE);
 
         //Client Data - Bad Data meaning invalid number of bytes.
@@ -437,13 +446,16 @@ public class TestClientPortChannel extends TestCase {
         channel.close();
     }
 
+    @Test
     public void testInvocationParamsClientPort() throws Exception {
-        runInvocationParams(ClientAuthHashScheme.HASH_SHA1, m_clientPort);
-        runInvocationParams(ClientAuthHashScheme.HASH_SHA256, m_clientPort);
+        runInvocationParams(ClientAuthScheme.HASH_SHA1, m_clientPort);
+        runInvocationParams(ClientAuthScheme.HASH_SHA256, m_clientPort);
     }
+
+    @Test
     public void testInvocationParamsAdminPort() throws Exception {
-        runInvocationParams(ClientAuthHashScheme.HASH_SHA1, m_adminPort);
-        runInvocationParams(ClientAuthHashScheme.HASH_SHA256, m_adminPort);
+        runInvocationParams(ClientAuthScheme.HASH_SHA1, m_adminPort);
+        runInvocationParams(ClientAuthScheme.HASH_SHA256, m_adminPort);
     }
 
     final byte VAR2[] = {
@@ -469,12 +481,12 @@ public class TestClientPortChannel extends TestCase {
         }
     }
 
-    public void runInvocationParams(ClientAuthHashScheme scheme, int port) throws Exception {
+    public void runInvocationParams(ClientAuthScheme scheme, int port) throws Exception {
         PortConnector channel = new PortConnector("localhost", port);
         channel.connect();
 
         //Send login message before invocation.
-        if (scheme == ClientAuthHashScheme.HASH_SHA1)
+        if (scheme == ClientAuthScheme.HASH_SHA1)
             login(channel);
         else
             loginSha2(channel);

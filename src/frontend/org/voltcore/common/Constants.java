@@ -1,5 +1,5 @@
 /* This file is part of VoltDB.
- * Copyright (C) 2008-2015 VoltDB Inc.
+ * Copyright (C) 2008-2016 VoltDB Inc.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as
@@ -22,4 +22,7 @@ public class Constants
     // The default heartbeat timeout value
     public static final int DEFAULT_HEARTBEAT_TIMEOUT_SECONDS = 90;
     public static final String VOLT_TMP_DIR = "volt.tmpdir";
+    public static final int DEFAULT_INTERNAL_PORT = 3021;
+    public static final int DEFAULT_ZK_PORT = 7181;
+    public static final String DEFAULT_INTERNAL_INTERFACE = "";
 }

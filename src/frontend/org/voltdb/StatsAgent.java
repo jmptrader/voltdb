@@ -1,5 +1,5 @@
 /* This file is part of VoltDB.
- * Copyright (C) 2008-2015 VoltDB Inc.
+ * Copyright (C) 2008-2016 VoltDB Inc.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as
@@ -220,7 +220,11 @@ public class StatsAgent extends OpsAgent
                     clientHandle,
                     System.currentTimeMillis(),
                     obj);
-            collectTopoStats(psr);
+            // hacky way to support two format of hashconfig using interval value
+            // return true if interval == true (delta-flag == 1), indicate sent compressed json
+            // otherwise return false, indicate sent original binary format
+            boolean jsonConfig = obj.getBoolean("interval");
+            collectTopoStats(psr,jsonConfig);
             return;
         }
         else if (subselector.equalsIgnoreCase("PARTITIONCOUNT")) {
@@ -302,7 +306,7 @@ public class StatsAgent extends OpsAgent
         }
     }
 
-    private void collectTopoStats(PendingOpsRequest psr)
+    private void collectTopoStats(PendingOpsRequest psr, boolean jsonConfig)
     {
         VoltTable[] tables = null;
         VoltTable topoStats = getStatsAggregate(StatsSelector.TOPO, false, psr.startTime);
@@ -315,7 +319,12 @@ public class StatsAgent extends OpsAgent
                             new VoltTable.ColumnInfo("HASHCONFIG", VoltType.VARBINARY));
             tables[1] = vt;
             HashinatorConfig hashConfig = TheHashinator.getCurrentConfig();
-            vt.addRow(hashConfig.type.toString(), hashConfig.configBytes);
+            if (!jsonConfig) {
+                vt.addRow(hashConfig.type.toString(), hashConfig.configBytes);
+            } else {
+                vt.addRow(hashConfig.type.toString(), TheHashinator.getCurrentHashinator().getConfigJSONCompressed());
+            }
+
         }
         psr.aggregateTables = tables;
 
@@ -351,14 +360,15 @@ public class StatsAgent extends OpsAgent
         boolean interval = obj.getBoolean("interval");
         StatsSelector subselector = StatsSelector.valueOf(subselectorString);
         switch (subselector) {
-        case DR:
-            stats = collectDRStats();
+        case DRPRODUCER:
+        case DR: // synonym of DRPRODUCER
+            stats = collectDRProducerStats();
             break;
-        case DRNODE:
-            stats = collectStats(StatsSelector.DRNODE, false);
+        case DRPRODUCERNODE:
+            stats = collectStats(StatsSelector.DRPRODUCERNODE, false);
             break;
-        case DRPARTITION:
-            stats = collectStats(StatsSelector.DRPARTITION, false);
+        case DRPRODUCERPARTITION:
+            stats = collectStats(StatsSelector.DRPRODUCERPARTITION, false);
             break;
         case SNAPSHOTSTATUS:
             stats = collectStats(StatsSelector.SNAPSHOTSTATUS, false);
@@ -437,12 +447,12 @@ public class StatsAgent extends OpsAgent
         return stats;
     }
 
-    private VoltTable[] collectDRStats()
+    private VoltTable[] collectDRProducerStats()
     {
         VoltTable[] stats = null;
 
-        VoltTable[] partitionStats = collectStats(StatsSelector.DRPARTITION, false);
-        VoltTable[] nodeStats = collectStats(StatsSelector.DRNODE, false);
+        VoltTable[] partitionStats = collectStats(StatsSelector.DRPRODUCERPARTITION, false);
+        VoltTable[] nodeStats = collectStats(StatsSelector.DRPRODUCERNODE, false);
         if (partitionStats != null && nodeStats != null) {
             stats = new VoltTable[2];
             stats[0] = partitionStats[0];
@@ -525,6 +535,14 @@ public class StatsAgent extends OpsAgent
             if (oldval != null) statsSources = oldval;
         }
         statsSources.add(source);
+    }
+
+    public void deregisterStatsSourcesFor(StatsSelector selector, long siteId) {
+        assert selector != null;
+        final NonBlockingHashMap<Long, NonBlockingHashSet<StatsSource>> siteIdToStatsSources = registeredStatsSources.get(selector);
+        if (siteIdToStatsSources != null) {
+            siteIdToStatsSources.remove(siteId);
+        }
     }
 
     /**

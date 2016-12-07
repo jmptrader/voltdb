@@ -1,5 +1,5 @@
 /* This file is part of VoltDB.
- * Copyright (C) 2008-2015 VoltDB Inc.
+ * Copyright (C) 2008-2016 VoltDB Inc.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as
@@ -53,6 +53,7 @@ import org.voltdb.VoltZK;
 import org.voltdb.VoltZK.MailboxType;
 import org.voltdb.compiler.ClusterConfig;
 
+import com.google_voltpatches.common.base.Preconditions;
 import com.google_voltpatches.common.collect.ImmutableMap;
 
 /**
@@ -87,8 +88,8 @@ public class Cartographer extends StatsSource
         try {
             JSONStringer stringer = new JSONStringer();
             stringer.object();
-            stringer.key(JSON_PARTITION_ID).value(partitionId);
-            stringer.key(JSON_INITIATOR_HSID).value(hsId);
+            stringer.keySymbolValuePair(JSON_PARTITION_ID, partitionId);
+            stringer.keySymbolValuePair(JSON_INITIATOR_HSID, hsId);
             stringer.endObject();
             BinaryPayloadMessage bpm = new BinaryPayloadMessage(new byte[0], stringer.toString().getBytes("UTF-8"));
             int hostId = m_hostMessenger.getHostId();
@@ -209,7 +210,7 @@ public class Cartographer extends StatsSource
             sites.add(leader);
         }
         else {
-            leader = m_iv2Masters.pointInTimeCache().get((Integer)rowKey);
+            leader = m_iv2Masters.pointInTimeCache().get(rowKey);
             sites.addAll(getReplicasForPartition((Integer)rowKey));
         }
 
@@ -396,6 +397,7 @@ public class Cartographer extends StatsSource
     public List<Integer> getIv2PartitionsToReplace(int kfactor, int sitesPerHost)
         throws JSONException
     {
+        Preconditions.checkArgument(sitesPerHost != VoltDB.UNDEFINED);
         List<Integer> partitions = getPartitions();
         hostLog.info("Computing partitions to replace.  Total partitions: " + partitions);
         Map<Integer, Integer> repsPerPart = new HashMap<Integer, Integer>();
@@ -476,10 +478,16 @@ public class Cartographer extends StatsSource
                 @Override
                 public Boolean call() throws Exception {
                     if (m_configuredReplicationFactor == 0
-                            || (m_configuredReplicationFactor == 1 && liveHids.size() == 2)) {
-                        //Dont die in k=0 cluster or 2node k1
+                            || (m_configuredReplicationFactor == 1 && liveHids.size() == 2 && m_partitionDetectionEnabled)) {
+                        //Dont die in k=0 cluster or 2node k1 (with partition detection on)
                         return false;
                     }
+                    // check if any node still in rejoin status
+                    try {
+                        if (m_zk.exists(VoltZK.rejoinNodeBlocker, false) != null) {
+                            return false;
+                        }
+                    } catch (KeeperException.NoNodeException ignore) {} // shouldn't happen
                     //Otherwise we do check replicas for host
                     return doPartitionsHaveReplicas(hid);
                 }
@@ -554,5 +562,4 @@ public class Cartographer extends StatsSource
         }
         return true;
     }
-
 }

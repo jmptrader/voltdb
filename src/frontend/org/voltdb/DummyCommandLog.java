@@ -1,5 +1,5 @@
 /* This file is part of VoltDB.
- * Copyright (C) 2008-2015 VoltDB Inc.
+ * Copyright (C) 2008-2016 VoltDB Inc.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as
@@ -25,6 +25,7 @@ import org.voltdb.messaging.Iv2InitiateTaskMessage;
 
 import com.google_voltpatches.common.util.concurrent.Futures;
 import com.google_voltpatches.common.util.concurrent.ListenableFuture;
+import com.google_voltpatches.common.util.concurrent.SettableFuture;
 
 public class DummyCommandLog implements CommandLog {
     @Override
@@ -55,9 +56,13 @@ public class DummyCommandLog implements CommandLog {
     }
 
     @Override
-    public void logIv2Fault(long writerHSId, Set<Long> survivorHSId,
+    public SettableFuture<Boolean> logIv2Fault(long writerHSId, Set<Long> survivorHSId,
             int partitionId, long spHandle) {
+        return null;
     }
+
+    @Override
+    public void initializeLastDurableUniqueId(DurabilityListener listener, long uniqueId) {}
 
     @Override
     public boolean isEnabled()

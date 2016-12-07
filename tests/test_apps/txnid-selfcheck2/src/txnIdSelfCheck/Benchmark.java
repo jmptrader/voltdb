@@ -1,5 +1,5 @@
 /* This file is part of VoltDB.
- * Copyright (C) 2008-2015 VoltDB Inc.
+ * Copyright (C) 2008-2016 VoltDB Inc.
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -23,6 +23,9 @@
 
 package txnIdSelfCheck;
 
+import java.io.FileWriter;
+import java.io.IOException;
+import java.lang.Thread.UncaughtExceptionHandler;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -41,9 +44,6 @@ import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
-import java.io.FileWriter;
-import java.io.IOException;
-import java.lang.Thread.UncaughtExceptionHandler;
 
 import org.voltcore.logging.VoltLogger;
 import org.voltdb.CLIConfig;
@@ -175,6 +175,9 @@ public class Benchmark {
         @Option(desc = "Allow disabling different threads for testing specific functionality. ")
         String disabledthreads = "none";
         ArrayList<String> disabledThreads = null;
+
+        @Option(desc = "Enable topology awareness")
+        boolean topologyaware = false;
 
         @Override
         public void validate() {
@@ -351,6 +354,9 @@ public class Benchmark {
 
         StatusListener statusListener = new StatusListener();
         ClientConfig clientConfig = new ClientConfig("", "", statusListener);
+        if (config.topologyaware) {
+            clientConfig.setTopologyChangeAware(true);
+        }
         client = ClientFactory.createClient(clientConfig);
     }
 
@@ -387,20 +393,24 @@ public class Benchmark {
     private void connect() throws InterruptedException {
         log.info("Connecting to VoltDB...");
 
-        final CountDownLatch connections = new CountDownLatch(1);
+        if (config.topologyaware) {
+            connectToOneServerWithRetry(config.parsedServers[0]);
+        } else {
+            final CountDownLatch connections = new CountDownLatch(1);
 
-        // use a new thread to connect to each server
-        for (final String server : config.parsedServers) {
-            new Thread(new Runnable() {
-                @Override
-                public void run() {
-                    connectToOneServerWithRetry(server);
-                    connections.countDown();
-                }
-            }).start();
+            // use a new thread to connect to each server
+            for (final String server : config.parsedServers) {
+                new Thread(new Runnable() {
+                    @Override
+                    public void run() {
+                        connectToOneServerWithRetry(server);
+                        connections.countDown();
+                    }
+                }).start();
+            }
+            // block until at least one connection is established
+            connections.await();
         }
-        // block until at least one connection is established
-        connections.await();
     }
 
     /**
@@ -514,6 +524,7 @@ public class Benchmark {
     }
 
     public static Thread.UncaughtExceptionHandler h = new UncaughtExceptionHandler() {
+        @Override
         public void uncaughtException(Thread th, Throwable ex) {
         log.error("Uncaught exception: " + ex.getMessage(), ex);
         printJStack();
@@ -574,7 +585,7 @@ public class Benchmark {
 
         // get stats
         try {
-            ClientResponse cr = client.callProcedure("Summarize");
+            ClientResponse cr = TxnId2Utils.doProcCall(client, "Summarize_Replica", config.threadoffset, config.threads);
             if (cr.getStatus() != ClientResponse.SUCCESS) {
                 log.error("Failed to call Summarize proc at startup. Exiting.");
                 log.error(((ClientResponseImpl) cr).toJSONString());
@@ -681,13 +692,13 @@ public class Benchmark {
         if (!config.disabledThreads.contains("partLoadlt")) {
             partLoadlt = new LoadTableLoader(client, "loadp",
                 (config.partfillerrowmb * 1024 * 1024) / config.fillerrowsize, 50, permits, false, 0);
-            partLoadlt.start();
+            // XXX temporary partLoadlt.start();
         }
         replLoadlt = null;
         if (config.mpratio > 0.0 && !config.disabledThreads.contains("replLoadlt")) {
             replLoadlt = new LoadTableLoader(client, "loadmp",
                     (config.replfillerrowmb * 1024 * 1024) / config.fillerrowsize, 3, permits, true, -1);
-            replLoadlt.start();
+            // XXX temporary replLoadlt.start();
         }
         if (!config.disabledThreads.contains("readThread")) {
             readThread = new ReadThread(client, config.threads, config.threadoffset,
